@@ -303,9 +303,12 @@ describe.skip('Invalid CSS Module Usage in node_modules', () => {
         expect(stderr).toMatch(
           /CSS Modules.*cannot.*be imported from within.*node_modules/
         )
-        expect(stderr).toMatch(
-          /Location:.*node_modules[\\/]example[\\/]index\.mjs/
-        )
+        // Skip: Rspack loaders cannot access module issuer info for location details
+        if (!process.env.NEXT_RSPACK) {
+          expect(stderr).toMatch(
+            /Location:.*node_modules[\\/]example[\\/]index\.mjs/
+          )
+        }
       })
     }
   )
@@ -331,9 +334,12 @@ describe.skip('Invalid Global CSS Module Usage in node_modules', () => {
         expect(stderr).toMatch(
           /Global CSS.*cannot.*be imported from within.*node_modules/
         )
-        expect(stderr).toMatch(
-          /Location:.*node_modules[\\/]example[\\/]index\.mjs/
-        )
+        // Skip: Rspack loaders cannot access module issuer info for location details
+        if (!process.env.NEXT_RSPACK) {
+          expect(stderr).toMatch(
+            /Location:.*node_modules[\\/]example[\\/]index\.mjs/
+          )
+        }
       })
     }
   )
@@ -718,7 +724,6 @@ describe('Catch-all Route CSS Module Usage', () => {
           expect(cssContent.replace(/\/\*.*?\*\/\n?/g, '').trim())
             .toMatchInlineSnapshot(`
            ".index-module___rV4CG__home{background:red}
-
            .\\35 5css-module__qe774W__home{color:green}"
           `)
         } else {

@@ -1,4 +1,4 @@
-use std::iter::once;
+use std::collections::BTreeSet;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -58,13 +58,16 @@ use crate::{
             styled_jsx::get_styled_jsx_transform_rule,
             swc_ecma_transform_plugins::get_swc_ecma_transform_plugin_rule,
         },
-        webpack_rules::webpack_loader_options,
+        webpack_rules::{WebpackLoaderBuiltinCondition, webpack_loader_options},
     },
     transform_options::{
         get_decorators_transform_options, get_jsx_transform_options,
         get_typescript_transform_options,
     },
-    util::{OptionEnvMap, defines, foreign_code_context_condition, internal_assets_conditions},
+    util::{
+        OptionEnvMap, defines, foreign_code_context_condition, internal_assets_conditions,
+        module_styles_rule_condition,
+    },
 };
 
 #[turbo_tasks::function]
@@ -95,18 +98,18 @@ pub async fn get_client_compile_time_info(
     browserslist_query: RcStr,
     define_env: Vc<OptionEnvMap>,
 ) -> Result<Vc<CompileTimeInfo>> {
+    let environment = BrowserEnvironment {
+        dom: true,
+        web_worker: false,
+        service_worker: false,
+        browserslist_query: browserslist_query.to_owned(),
+    }
+    .resolved_cell();
+
     CompileTimeInfo::builder(
-        Environment::new(ExecutionEnvironment::Browser(
-            BrowserEnvironment {
-                dom: true,
-                web_worker: false,
-                service_worker: false,
-                browserslist_query: browserslist_query.to_owned(),
-            }
-            .resolved_cell(),
-        ))
-        .to_resolved()
-        .await?,
+        Environment::new(ExecutionEnvironment::Browser(environment), *environment)
+            .to_resolved()
+            .await?,
     )
     .defines(next_client_defines(define_env).to_resolved().await?)
     .free_var_references(next_client_free_vars(define_env).to_resolved().await?)
@@ -147,9 +150,9 @@ pub async fn get_client_resolve_options_context(
         get_next_client_resolved_map(project_path.clone(), project_path.clone(), *mode.await?)
             .to_resolved()
             .await?;
-    let custom_conditions = vec![mode.await?.condition().into()];
+    let custom_conditions = mode.await?.custom_resolve_conditions().collect();
     let resolve_options_context = ResolveOptionsContext {
-        enable_node_modules: Some(project_path.root().await?.clone_value()),
+        enable_node_modules: Some(project_path.root().owned().await?),
         custom_conditions,
         import_map: Some(next_client_import_map),
         fallback_import_map: Some(next_client_fallback_import_map),
@@ -210,7 +213,6 @@ pub async fn get_client_module_options_context(
     mode: Vc<NextMode>,
     next_config: Vc<NextConfig>,
     encryption_key: ResolvedVc<RcStr>,
-    no_mangling: Vc<bool>,
 ) -> Result<Vc<ModuleOptionsContext>> {
     let next_mode = mode.await?;
     let resolve_options_context = get_client_resolve_options_context(
@@ -236,26 +238,21 @@ pub async fn get_client_module_options_context(
     .to_resolved()
     .await?;
 
-    // A separate webpack rules will be applied to codes matching
-    // foreign_code_context_condition. This allows to import codes from
-    // node_modules that requires webpack loaders, which next-dev implicitly
-    // does by default.
-    let conditions = vec![rcstr!("browser"), mode.await?.condition().into()];
-    let foreign_enable_webpack_loaders = webpack_loader_options(
-        project_path.clone(),
-        next_config,
-        true,
-        conditions
-            .iter()
-            .cloned()
-            .chain(once(rcstr!("foreign")))
-            .collect(),
-    )
-    .await?;
+    let mut loader_conditions = BTreeSet::new();
+    loader_conditions.insert(WebpackLoaderBuiltinCondition::Browser);
+    loader_conditions.extend(mode.await?.webpack_loader_conditions());
 
-    // Now creates a webpack rules that applies to all codes.
+    // A separate webpack rules will be applied to codes matching foreign_code_context_condition.
+    // This allows to import codes from node_modules that requires webpack loaders, which next-dev
+    // implicitly does by default.
+    let mut foreign_conditions = loader_conditions.clone();
+    foreign_conditions.insert(WebpackLoaderBuiltinCondition::Foreign);
+    let foreign_enable_webpack_loaders =
+        *webpack_loader_options(project_path.clone(), next_config, foreign_conditions).await?;
+
+    // Now creates a webpack rules that applies to all code.
     let enable_webpack_loaders =
-        webpack_loader_options(project_path.clone(), next_config, false, conditions).await?;
+        *webpack_loader_options(project_path.clone(), next_config, loader_conditions).await?;
 
     let tree_shaking_mode_for_user_code = *next_config
         .tree_shaking_mode_for_user_code(next_mode.is_development())
@@ -263,7 +260,7 @@ pub async fn get_client_module_options_context(
     let tree_shaking_mode_for_foreign_code = *next_config
         .tree_shaking_mode_for_foreign_code(next_mode.is_development())
         .await?;
-    let target_browsers = env.runtime_versions();
+    let css_target_browsers = env.css_runtime_versions();
 
     let mut next_client_rules =
         get_next_client_transforms_rules(next_config, ty.clone(), mode, false, encryption_key)
@@ -276,7 +273,7 @@ pub async fn get_client_module_options_context(
         get_relay_transform_rule(next_config, project_path.clone()).await?,
         get_emotion_transform_rule(next_config).await?,
         get_styled_components_transform_rule(next_config).await?,
-        get_styled_jsx_transform_rule(next_config, target_browsers).await?,
+        get_styled_jsx_transform_rule(next_config, css_target_browsers).await?,
         get_react_remove_properties_transform_rule(next_config).await?,
         get_remove_console_transform_rule(next_config).await?,
     ]
@@ -317,6 +314,7 @@ pub async fn get_client_module_options_context(
         },
         css: CssOptionsContext {
             source_maps,
+            module_css_condition: Some(module_styles_rule_condition()),
             ..Default::default()
         },
         environment: Some(env),
@@ -368,16 +366,6 @@ pub async fn get_client_module_options_context(
         },
         enable_webpack_loaders,
         enable_mdx_rs,
-        css: CssOptionsContext {
-            minify_type: if *next_config.turbo_minify(mode).await? {
-                MinifyType::Minify {
-                    mangle: (!*no_mangling.await?).then_some(MangleType::OptimalSize),
-                }
-            } else {
-                MinifyType::NoMinify
-            },
-            ..module_options_context.css
-        },
         rules: vec![
             (
                 foreign_code_context_condition(next_config, project_path).await?,
@@ -442,9 +430,7 @@ pub async fn get_client_chunking_context(
         client_root_to_root_path,
         client_root.clone(),
         client_root.join("static/chunks")?,
-        get_client_assets_path(client_root.clone())
-            .await?
-            .clone_value(),
+        get_client_assets_path(client_root.clone()).owned().await?,
         environment.to_resolved().await?,
         next_mode.runtime_type(),
     )
@@ -468,7 +454,10 @@ pub async fn get_client_chunking_context(
     .module_id_strategy(module_id_strategy.to_resolved().await?);
 
     if next_mode.is_development() {
-        builder = builder.hot_module_replacement().use_file_source_map_uris();
+        builder = builder
+            .hot_module_replacement()
+            .use_file_source_map_uris()
+            .dynamic_chunk_content_loading(true);
     } else {
         builder = builder
             .chunking_config(

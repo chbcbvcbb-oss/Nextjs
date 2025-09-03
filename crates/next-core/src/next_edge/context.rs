@@ -11,7 +11,9 @@ use turbopack_core::{
         module_id_strategies::ModuleIdStrategy,
     },
     compile_time_info::{CompileTimeDefines, CompileTimeInfo, FreeVarReference, FreeVarReferences},
-    environment::{EdgeWorkerEnvironment, Environment, ExecutionEnvironment, NodeJsVersion},
+    environment::{
+        BrowserEnvironment, EdgeWorkerEnvironment, Environment, ExecutionEnvironment, NodeJsVersion,
+    },
     free_var_references,
     module_graph::export_usage::OptionExportUsageInfo,
 };
@@ -19,10 +21,11 @@ use turbopack_ecmascript::chunk::EcmascriptChunkType;
 use turbopack_node::execution_context::ExecutionContext;
 
 use crate::{
+    app_structure::CollectedRootParams,
     mode::NextMode,
     next_config::NextConfig,
     next_font::local::NextFontLocalResolvePlugin,
-    next_import_map::get_next_edge_import_map,
+    next_import_map::{get_next_edge_and_server_fallback_import_map, get_next_edge_import_map},
     next_server::context::ServerContextType,
     next_shared::resolve::{
         ModuleFeatureReportResolvePlugin, NextSharedRuntimeResolvePlugin,
@@ -59,11 +62,23 @@ pub async fn get_edge_compile_time_info(
     project_path: FileSystemPath,
     define_env: Vc<OptionEnvMap>,
     node_version: ResolvedVc<NodeJsVersion>,
+    css_browserslist_query: RcStr,
 ) -> Result<Vc<CompileTimeInfo>> {
+    let css_environment = BrowserEnvironment {
+        dom: false,
+        web_worker: false,
+        service_worker: false,
+        browserslist_query: css_browserslist_query,
+    }
+    .resolved_cell();
+
     CompileTimeInfo::builder(
-        Environment::new(ExecutionEnvironment::EdgeWorker(
-            EdgeWorkerEnvironment { node_version }.resolved_cell(),
-        ))
+        Environment::new(
+            ExecutionEnvironment::EdgeWorker(
+                EdgeWorkerEnvironment { node_version }.resolved_cell(),
+            ),
+            *css_environment,
+        )
         .to_resolved()
         .await?,
     )
@@ -84,6 +99,7 @@ pub async fn get_edge_resolve_options_context(
     mode: Vc<NextMode>,
     next_config: Vc<NextConfig>,
     execution_context: Vc<ExecutionContext>,
+    collected_root_params: Option<Vc<CollectedRootParams>>,
 ) -> Result<Vc<ResolveOptionsContext>> {
     let next_edge_import_map = get_next_edge_import_map(
         project_path.clone(),
@@ -91,9 +107,14 @@ pub async fn get_edge_resolve_options_context(
         next_config,
         mode,
         execution_context,
+        collected_root_params,
     )
     .to_resolved()
     .await?;
+    let next_edge_fallback_import_map =
+        get_next_edge_and_server_fallback_import_map(project_path.clone(), NextRuntime::Edge)
+            .to_resolved()
+            .await?;
 
     let mut before_resolve_plugins = vec![ResolvedVc::upcast(
         ModuleFeatureReportResolvePlugin::new(project_path.clone())
@@ -140,24 +161,19 @@ pub async fn get_edge_resolve_options_context(
     )];
 
     // https://github.com/vercel/next.js/blob/bf52c254973d99fed9d71507a2e818af80b8ade7/packages/next/src/build/webpack-config.ts#L96-L102
-    let mut custom_conditions = vec![mode.await?.condition().into()];
-    custom_conditions.extend(
-        NextRuntime::Edge
-            .conditions()
-            .iter()
-            .map(ToString::to_string)
-            .map(RcStr::from),
-    );
+    let mut custom_conditions: Vec<_> = mode.await?.custom_resolve_conditions().collect();
+    custom_conditions.extend(NextRuntime::Edge.custom_resolve_conditions());
 
     if ty.should_use_react_server_condition() {
         custom_conditions.push(rcstr!("react-server"));
     };
 
     let resolve_options_context = ResolveOptionsContext {
-        enable_node_modules: Some(project_path.root().await?.clone_value()),
+        enable_node_modules: Some(project_path.root().owned().await?),
         enable_edge_node_externals: true,
         custom_conditions,
         import_map: Some(next_edge_import_map),
+        fallback_import_map: Some(next_edge_fallback_import_map),
         module: true,
         browser: true,
         after_resolve_plugins,

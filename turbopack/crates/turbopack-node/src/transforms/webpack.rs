@@ -1,7 +1,6 @@
 use std::mem::take;
 
 use anyhow::{Context, Result, bail};
-use async_trait::async_trait;
 use base64::Engine;
 use either::Either;
 use futures::try_join;
@@ -16,7 +15,10 @@ use turbo_tasks::{
 use turbo_tasks_bytes::stream::SingleValue;
 use turbo_tasks_env::ProcessEnv;
 use turbo_tasks_fs::{
-    File, FileContent, FileSystemPath, glob::Glob, json::parse_json_with_source_context, rope::Rope,
+    File, FileContent, FileSystemPath,
+    glob::{Glob, GlobOptions},
+    json::parse_json_with_source_context,
+    rope::Rope,
 };
 use turbopack_core::{
     asset::{Asset, AssetContent},
@@ -86,6 +88,7 @@ struct WebpackLoadersProcessingResult {
 )]
 pub struct WebpackLoaderItem {
     pub loader: RcStr,
+    #[serde(default)]
     pub options: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -193,8 +196,8 @@ async fn webpack_loaders_executor(
     Ok(evaluate_context.process(
         Vc::upcast(FileSource::new(
             embed_file_path(rcstr!("transforms/webpack-loaders.ts"))
-                .await?
-                .clone_value(),
+                .owned()
+                .await?,
         )),
         ReferenceType::Internal(InnerAssets::empty().to_resolved().await?),
     ))
@@ -244,7 +247,7 @@ impl WebpackLoadersProcessedAsset {
             .to_resolved()
             .await?;
 
-        let resource_fs_path = this.source.ident().path().await?.clone_value();
+        let resource_fs_path = this.source.ident().path().owned().await?;
         let resource_fs_path_ref = resource_fs_path.clone();
         let Some(resource_path) = project_path.get_relative_path_to(&resource_fs_path_ref) else {
             bail!(format!(
@@ -315,10 +318,10 @@ impl WebpackLoadersProcessedAsset {
 }
 
 #[turbo_tasks::function]
-pub(crate) fn evaluate_webpack_loader(
+pub(crate) async fn evaluate_webpack_loader(
     webpack_loader_context: WebpackLoaderContext,
-) -> Vc<JavaScriptEvaluation> {
-    custom_evaluate(webpack_loader_context)
+) -> Result<Vc<JavaScriptEvaluation>> {
+    custom_evaluate(webpack_loader_context).await
 }
 
 #[turbo_tasks::function]
@@ -363,6 +366,7 @@ pub enum InfoMessage {
     // Sent to inform Turbopack about the dependencies of the task.
     // All fields are `default` since it is ok for the client to
     // simply omit instead of sending empty arrays.
+    #[serde(rename_all = "camelCase")]
     Dependencies {
         #[serde(default)]
         env_variables: Vec<RcStr>,
@@ -426,15 +430,16 @@ pub struct WebpackLoaderContext {
     pub additional_invalidation: ResolvedVc<Completion>,
 }
 
-#[async_trait]
 impl EvaluateContext for WebpackLoaderContext {
     type InfoMessage = InfoMessage;
     type RequestMessage = RequestMessage;
     type ResponseMessage = ResponseMessage;
     type State = Vec<LogInfo>;
 
-    fn compute(self, sender: Vc<JavaScriptStreamSender>) {
-        let _ = compute_webpack_loader_evaluation(self, sender);
+    async fn compute(self, sender: Vc<JavaScriptStreamSender>) -> Result<()> {
+        compute_webpack_loader_evaluation(self, sender)
+            .as_side_effect()
+            .await
     }
 
     fn pool(&self) -> OperationVc<crate::pool::NodeJsPool> {
@@ -472,7 +477,7 @@ impl EvaluateContext for WebpackLoaderContext {
             source: IssueSource::from_source_only(self.context_source_for_issue),
             assets_for_source_mapping: pool.assets_for_source_mapping,
             assets_root: pool.assets_root.clone(),
-            root_path: self.chunking_context.root_path().await?.clone_value(),
+            root_path: self.chunking_context.root_path().owned().await?,
         }
         .resolved_cell()
         .emit();
@@ -512,22 +517,18 @@ impl EvaluateContext for WebpackLoaderContext {
                     .map(|(dir, glob)| async move {
                         self.cwd
                             .join(dir)?
-                            .track_glob(Glob::new(glob.clone()), false)
+                            .track_glob(Glob::new(glob.clone(), GlobOptions::default()), false)
                             .await
                     })
                     .try_join();
-                let build_paths = build_file_paths
-                    .iter()
-                    .map(|path| async move { self.cwd.join(path) })
-                    .try_join();
-                let (resolved_build_paths, ..) = try_join!(
-                    build_paths,
+                try_join!(
                     env_subscriptions,
                     file_subscriptions,
                     directory_subscriptions
                 )?;
 
-                for build_path in resolved_build_paths {
+                for build_path in build_file_paths {
+                    let build_path = self.cwd.join(&build_path)?;
                     BuildDependencyIssue {
                         source: IssueSource::from_source_only(self.context_source_for_issue),
                         path: build_path,
@@ -543,7 +544,7 @@ impl EvaluateContext for WebpackLoaderContext {
                     severity,
                     assets_for_source_mapping: pool.assets_for_source_mapping,
                     assets_root: pool.assets_root.clone(),
-                    project_dir: self.chunking_context.root_path().await?.clone_value(),
+                    project_dir: self.chunking_context.root_path().owned().await?,
                 }
                 .resolved_cell()
                 .emit();
@@ -635,7 +636,7 @@ impl EvaluateContext for WebpackLoaderContext {
                 },
                 assets_for_source_mapping: pool.assets_for_source_mapping,
                 assets_root: pool.assets_root.clone(),
-                project_dir: self.chunking_context.root_path().await?.clone_value(),
+                project_dir: self.chunking_context.root_path().owned().await?,
             }
             .resolved_cell()
             .emit();

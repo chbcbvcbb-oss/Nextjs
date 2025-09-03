@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import type { ParsedUrlQuery } from 'querystring'
+import type { ReactDOMServerReadableStream } from 'react-dom/server'
 import type { NextRouter } from '../shared/lib/router/router'
 import type { HtmlProps } from '../shared/lib/html-context.shared-runtime'
 import type { DomainLocale } from './config'
@@ -30,7 +31,6 @@ import type {
   SizeLimit,
 } from '../types'
 import type { UnwrapPromise } from '../lib/coalesced-function'
-import type { ReactReadableStream } from './stream-utils/node-web-streams-helper'
 import type { ClientReferenceManifest } from '../build/webpack/plugins/flight-manifest-plugin'
 import type { NextFontManifest } from '../build/webpack/plugins/next-font-manifest-plugin'
 import type { PagesModule } from './route-modules/pages/module'
@@ -51,6 +51,8 @@ import {
   SERVER_PROPS_SSG_CONFLICT,
   SSG_GET_INITIAL_PROPS_CONFLICT,
   UNSTABLE_REVALIDATE_RENAME_ERROR,
+  HTML_CONTENT_TYPE_HEADER,
+  JSON_CONTENT_TYPE_HEADER,
 } from '../lib/constants'
 import {
   NEXT_BUILTIN_DOCUMENT,
@@ -263,7 +265,7 @@ export type RenderOptsPartial = {
   assetQueryString?: string
   resolvedUrl?: string
   resolvedAsPath?: string
-  setIsrStatus?: (key: string, value: boolean | null) => void
+  setIsrStatus?: (key: string, value: boolean) => void
   clientReferenceManifest?: DeepReadonly<ClientReferenceManifest>
   nextFontManifest?: DeepReadonly<NextFontManifest>
   distDir?: string
@@ -285,7 +287,6 @@ export type RenderOptsPartial = {
   images: ImageConfigComplete
   largePageDataBytes?: number
   isOnDemandRevalidate?: boolean
-  strictNextHead: boolean
   isPossibleServerAction?: boolean
   isExperimentalCompile?: boolean
   isPrefetch?: boolean
@@ -661,7 +662,7 @@ export async function renderToHTMLImpl(
     }
 
     if (renderOpts?.setIsrStatus) {
-      renderOpts.setIsrStatus(asPath, isSSG || isAutoExport ? true : null)
+      renderOpts.setIsrStatus(asPath, isSSG || isAutoExport)
     }
   }
 
@@ -1063,7 +1064,10 @@ export async function renderToHTMLImpl(
 
     // this must come after revalidate is added to renderResultMeta
     if (metadata.isNotFound) {
-      return new RenderResult(null, { metadata })
+      return new RenderResult(null, {
+        metadata,
+        contentType: null,
+      })
     }
   }
 
@@ -1179,7 +1183,10 @@ export async function renderToHTMLImpl(
       }
 
       metadata.isNotFound = true
-      return new RenderResult(null, { metadata })
+      return new RenderResult(null, {
+        metadata,
+        contentType: null,
+      })
     }
 
     if ('redirect' in data && typeof data.redirect === 'object') {
@@ -1229,6 +1236,7 @@ export async function renderToHTMLImpl(
   if ((isNextDataRequest && !isSSG) || metadata.isRedirect) {
     return new RenderResult(JSON.stringify(props), {
       metadata,
+      contentType: JSON_CONTENT_TYPE_HEADER,
     })
   }
 
@@ -1239,7 +1247,7 @@ export async function renderToHTMLImpl(
   }
 
   // the response might be finished on the getInitialProps call
-  if (isResSent(res) && !isSSG) return new RenderResult(null, { metadata })
+  if (isResSent(res) && !isSSG) return RenderResult.EMPTY
 
   // we preload the buildManifest for auto-export dynamic pages
   // to speed up hydrating query values
@@ -1297,7 +1305,7 @@ export async function renderToHTMLImpl(
       renderShell: (
         _App: AppType,
         _Component: NextComponentType
-      ) => Promise<ReactReadableStream>
+      ) => Promise<ReactDOMServerReadableStream>
     ) {
       const renderPage: RenderPage = async (
         options: ComponentsEnhancer = {}
@@ -1453,7 +1461,10 @@ export async function renderToHTMLImpl(
     async () => renderDocument()
   )
   if (!documentResult) {
-    return new RenderResult(null, { metadata })
+    return new RenderResult(null, {
+      metadata,
+      contentType: HTML_CONTENT_TYPE_HEADER,
+    })
   }
 
   const dynamicImportsIds = new Set<string | number>()
@@ -1512,7 +1523,6 @@ export async function renderToHTMLImpl(
       notFoundSrcPage: notFoundSrcPage && dev ? notFoundSrcPage : undefined,
     },
     nonce,
-    strictNextHead: renderOpts.strictNextHead,
     buildManifest: filteredBuildManifest,
     docComponentsRendered,
     dangerousAsPath: router.asPath,
@@ -1608,7 +1618,10 @@ export async function renderToHTMLImpl(
     hybridAmp,
   })
 
-  return new RenderResult(optimizedHtml, { metadata })
+  return new RenderResult(optimizedHtml, {
+    metadata,
+    contentType: HTML_CONTENT_TYPE_HEADER,
+  })
 }
 
 export type PagesRender = (

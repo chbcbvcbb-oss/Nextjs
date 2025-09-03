@@ -267,7 +267,7 @@ pub async fn tsconfig_resolve_options(
     let configs = read_tsconfigs(
         tsconfig.read(),
         ResolvedVc::upcast(FileSource::new(tsconfig.clone()).to_resolved().await?),
-        node_cjs_resolve_options(tsconfig.root().await?.clone_value()),
+        node_cjs_resolve_options(tsconfig.root().owned().await?),
     )
     .await?;
 
@@ -282,7 +282,7 @@ pub async fn tsconfig_resolve_options(
     })
     .await?
     {
-        (*base_url.await?).clone()
+        base_url.owned().await?
     } else {
         None
     };
@@ -321,7 +321,7 @@ pub async fn tsconfig_resolve_options(
                         })
                         .collect();
                     all_paths.insert(
-                        key.to_string(),
+                        RcStr::from(key.as_str()),
                         ImportMapping::primary_alternatives(entries, Some(context_dir.clone())),
                     );
                 } else {
@@ -426,13 +426,15 @@ pub async fn type_resolve(
         fragment: _,
     } = &*request.await?
     {
-        let m = if let Some(stripped) = m.strip_prefix('@') {
-            stripped.replace('/', "__").into()
+        let mut m = if let Some(mut stripped) = m.strip_prefix("@") {
+            stripped.replace_constants(&|c| Some(Pattern::Constant(c.replace("/", "__").into())));
+            stripped
         } else {
             m.clone()
         };
+        m.push_front(rcstr!("@types/").into());
         Some(Request::module(
-            format!("@types/{m}").into(),
+            m,
             p.clone(),
             RcStr::default(),
             RcStr::default(),
@@ -473,7 +475,7 @@ pub async fn type_resolve(
     handle_resolve_error(
         result,
         ty,
-        origin.origin_path().await?.clone_value(),
+        origin.origin_path().owned().await?,
         request,
         options,
         false,

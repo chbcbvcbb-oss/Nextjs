@@ -31,6 +31,7 @@ pub mod debug;
 pub mod embed_js;
 pub mod evaluate;
 pub mod execution_context;
+mod heap_queue;
 mod node_entry;
 mod pool;
 pub mod render;
@@ -46,7 +47,7 @@ async fn emit(
     for asset in internal_assets(intermediate_asset, intermediate_output_path).await? {
         let _ = asset
             .content()
-            .write(asset.path().await?.clone_value())
+            .write(asset.path().owned().await?)
             .resolve()
             .await?;
     }
@@ -216,13 +217,13 @@ pub async fn get_renderer_pool_operation(
 ) -> Result<Vc<NodeJsPool>> {
     emit_package_json(intermediate_output_path.clone())?.await?;
 
-    let _ = emit(*intermediate_asset, output_root.clone())
-        .resolve()
+    emit(*intermediate_asset, output_root.clone())
+        .as_side_effect()
         .await?;
     let assets_for_source_mapping =
         internal_assets_for_source_mapping(*intermediate_asset, output_root.clone());
 
-    let entrypoint = intermediate_asset.path().await?.clone_value();
+    let entrypoint = intermediate_asset.path().owned().await?;
 
     let Some(cwd) = to_sys_path(cwd.clone()).await? else {
         bail!(
@@ -266,9 +267,9 @@ pub async fn get_intermediate_asset(
     Ok(Vc::upcast(
         chunking_context.root_entry_chunk_group_asset(
             chunking_context
-                .chunk_path(None, main_entry.ident(), rcstr!(".js"))
-                .await?
-                .clone_value(),
+                .chunk_path(None, main_entry.ident(), None, rcstr!(".js"))
+                .owned()
+                .await?,
             other_entries.with_entry(*main_entry),
             ModuleGraph::from_modules(
                 Vc::cell(vec![ChunkGroupEntry::Entry(
@@ -292,13 +293,4 @@ pub async fn get_intermediate_asset(
 pub struct ResponseHeaders {
     pub status: u16,
     pub headers: Vec<(RcStr, RcStr)>,
-}
-
-pub fn register() {
-    turbo_tasks::register();
-    turbo_tasks_bytes::register();
-    turbo_tasks_fs::register();
-    turbopack_dev_server::register();
-    turbopack_ecmascript::register();
-    include!(concat!(env!("OUT_DIR"), "/register.rs"));
 }

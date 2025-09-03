@@ -8,6 +8,8 @@ import { patchFetch as _patchFetch } from '../../server/lib/patch-fetch'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { getRequestMeta } from '../../server/request-meta'
 import { getTracer, type Span, SpanKind } from '../../server/lib/trace/tracer'
+import { setReferenceManifestsSingleton } from '../../server/app-render/encryption-utils'
+import { createServerModuleMap } from '../../server/app-render/action-utils'
 import { normalizeAppPath } from '../../shared/lib/router/utils/app-paths'
 import { NodeNextRequest, NodeNextResponse } from '../../server/base-http/node'
 import {
@@ -50,7 +52,7 @@ const routeModule = new AppRouteRouteModule({
     bundlePath: 'VAR_DEFINITION_BUNDLE_PATH',
   },
   distDir: process.env.__NEXT_RELATIVE_DIST_DIR || '',
-  projectDir: process.env.__NEXT_RELATIVE_PROJECT_DIR || '',
+  relativeProjectDir: process.env.__NEXT_RELATIVE_PROJECT_DIR || '',
   resolvedPagePath: 'VAR_RESOLVED_PAGE_PATH',
   nextConfigOutput,
   userland,
@@ -119,6 +121,8 @@ export async function handler(
     isOnDemandRevalidate,
     revalidateOnlyGenerated,
     resolvedPathname,
+    clientReferenceManifest,
+    serverActionsManifest,
   } = prepareResult
 
   const normalizedSrcPage = normalizeAppPath(srcPage)
@@ -160,6 +164,20 @@ export async function handler(
   // request.
   const isRevalidate = isIsr && !supportsDynamicResponse
 
+  // Before rendering (which initializes component tree modules), we have to
+  // set the reference manifests to our global store so Server Action's
+  // encryption util can access to them at the top level of the page module.
+  if (serverActionsManifest && clientReferenceManifest) {
+    setReferenceManifestsSingleton({
+      page: srcPage,
+      clientReferenceManifest,
+      serverActionsManifest,
+      serverModuleMap: createServerModuleMap({
+        serverActionsManifest,
+      }),
+    })
+  }
+
   const method = req.method || 'GET'
   const tracer = getTracer()
   const activeSpan = tracer.getActiveScopeSpan()
@@ -169,7 +187,7 @@ export async function handler(
     prerenderManifest,
     renderOpts: {
       experimental: {
-        dynamicIO: Boolean(nextConfig.experimental.dynamicIO),
+        cacheComponents: Boolean(nextConfig.experimental.cacheComponents),
         authInterrupts: Boolean(nextConfig.experimental.authInterrupts),
       },
       supportsDynamicResponse,
@@ -448,8 +466,7 @@ export async function handler(
       )
     }
   } catch (err) {
-    // if we aren't wrapped by base-server handle here
-    if (!activeSpan) {
+    if (!(err instanceof NoFallbackError)) {
       await routeModule.onRequestError(req, err, {
         routerKind: 'App Router',
         routePath: normalizedSrcPage,

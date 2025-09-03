@@ -92,12 +92,34 @@ module.exports = ({ dev, ...rest }) => {
           type: 'javascript/auto',
         },
         {
+          test: /\.(ts|tsx)$/,
+          exclude: [/node_modules/],
+          loader: 'babel-loader',
+          options: {
+            plugins: [
+              [
+                'babel-plugin-react-compiler',
+                /**
+                 * @type {import('babel-plugin-react-compiler').PluginOptions}
+                 */
+                ({}),
+              ],
+              ['@babel/plugin-syntax-typescript', { isTSX: true }],
+            ],
+            sourceMaps: true,
+          },
+          type: 'javascript/auto',
+        },
+        {
           test: /\.css$/,
           use: [
             {
               loader: 'style-loader',
               options: {
-                injectType: 'singletonStyleTag',
+                // Explicitly set the injectType to 'styleTag' which is also the default behavior.
+                // We've experienced `singletonStyleTag` that the later updated styles not being applied.
+                // Keep using `styleTag` to ensure when new styles injected the style can also be updated.
+                injectType: 'styleTag',
                 insert: require.resolve(
                   './src/build/webpack/loaders/devtool/devtool-style-inject.js'
                 ),

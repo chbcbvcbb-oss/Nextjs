@@ -27,6 +27,7 @@ mod next_image;
 mod next_import_map;
 pub mod next_manifests;
 pub mod next_pages;
+mod next_root_params;
 mod next_route_matcher;
 pub mod next_server;
 pub mod next_server_component;
@@ -51,17 +52,3 @@ pub use next_edge::context::{
 pub use next_import_map::get_next_package;
 pub use page_loader::{PageLoaderAsset, create_page_loader_entry_module};
 pub use util::{PathType, get_asset_path_from_pathname, pathname_for_path};
-
-pub fn register() {
-    turbo_tasks::register();
-    turbo_tasks_bytes::register();
-    turbo_tasks_fs::register();
-    turbo_tasks_fetch::register();
-    turbopack_browser::register();
-    turbopack_node::register();
-    turbopack::register();
-    turbopack_image::register();
-    turbopack_ecmascript::register();
-    turbopack_ecmascript_plugins::register();
-    include!(concat!(env!("OUT_DIR"), "/register.rs"));
-}

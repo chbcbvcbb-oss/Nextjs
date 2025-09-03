@@ -68,9 +68,9 @@ declare module 'react-server-dom-webpack/client' {
   export function createServerReference(
     id: string,
     callServer: CallServerCallback,
-    encodeFormAction?: EncodeFormActionCallback,
-    findSourceMapURL?: FindSourceMapURLCallback, // DEV-only
-    functionName?: string
+    encodeFormAction: EncodeFormActionCallback | undefined,
+    findSourceMapURL: FindSourceMapURLCallback | undefined, // DEV-only
+    functionName: string | undefined
   ): (...args: unknown[]) => Promise<unknown>
 
   export function createTemporaryReferenceSet(
@@ -100,7 +100,8 @@ declare module 'react-server-dom-webpack/client.browser' {
   export interface Options {
     callServer?: CallServerCallback
     environmentName?: string
-    findSourceMapURL?: FindSourceMapURLCallback
+    // It's optional but we want to avoid accidentally omitting it.
+    findSourceMapURL: FindSourceMapURLCallback | undefined
     replayConsoleLogs?: boolean
     temporaryReferences?: TemporaryReferenceSet
   }
@@ -141,7 +142,17 @@ declare module 'react-server-dom-webpack/server.edge' {
     options?: {
       temporaryReferences?: TemporaryReferenceSet
       environmentName?: string | (() => string)
-      filterStackFrame?: (url: string, functionName: string) => boolean
+      // This is actually optional.
+      // But we want to not miss callsites accidentally and explicitly choose
+      // at each callsite which implementation to choose.
+      filterStackFrame:
+        | ((
+            url: string,
+            functionName: string,
+            lineNumber: number,
+            columnNumber: number
+          ) => boolean)
+        | undefined
       onError?: (error: unknown) => void
       onPostpone?: (reason: string) => void
       signal?: AbortSignal
@@ -262,7 +273,17 @@ declare module 'react-server-dom-webpack/static' {
     },
     options?: {
       environmentName?: string | (() => string)
-      filterStackFrame?: (url: string, functionName: string) => boolean
+      // This is actually optional.
+      // But we want to not miss callsites accidentally and explicitly choose
+      // at each callsite which implementation to choose.
+      filterStackFrame:
+        | ((
+            url: string,
+            functionName: string,
+            lineNumber: number,
+            columnNumber: number
+          ) => boolean)
+        | undefined
       identifierPrefix?: string
       signal?: AbortSignal
       temporaryReferences?: TemporaryReferenceSet
@@ -280,7 +301,8 @@ declare module 'react-server-dom-webpack/client.edge' {
     nonce?: string
     encodeFormAction?: EncodeFormActionCallback
     temporaryReferences?: TemporaryReferenceSet
-    findSourceMapURL?: FindSourceMapURLCallback
+    // It's optional but we want to avoid accidentally omitting it.
+    findSourceMapURL: FindSourceMapURLCallback | undefined
     replayConsoleLogs?: boolean
     environmentName?: string
   }
@@ -440,6 +462,33 @@ declare module 'next/dist/compiled/raw-body' {
 declare module 'next/dist/compiled/image-size' {
   import m from 'image-size'
   export = m
+}
+
+declare module 'next/dist/compiled/image-detector/detector.js' {
+  export function detector(
+    arr: Uint8Array
+  ):
+    | 'bmp'
+    | 'cur'
+    | 'dds'
+    | 'gif'
+    | 'heif'
+    | 'icns'
+    | 'ico'
+    | 'j2c'
+    | 'jp2'
+    | 'jpg'
+    | 'jxl'
+    | 'jxl-stream'
+    | 'ktx'
+    | 'png'
+    | 'pnm'
+    | 'psd'
+    | 'svg'
+    | 'tga'
+    | 'tiff'
+    | 'webp'
+    | undefined
 }
 
 declare module 'next/dist/compiled/@hapi/accept' {
@@ -733,6 +782,11 @@ declare module 'next/dist/compiled/stacktrace-parser' {
 
 declare module 'next/dist/compiled/anser' {
   import * as m from 'anser'
+  export = m
+}
+
+declare module 'next/dist/compiled/safe-stable-stringify' {
+  import * as m from 'safe-stable-stringify'
   export = m
 }
 

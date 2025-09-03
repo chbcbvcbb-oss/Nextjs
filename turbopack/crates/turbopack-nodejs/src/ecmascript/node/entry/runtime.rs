@@ -69,7 +69,7 @@ impl EcmascriptBuildNodeRuntimeChunk {
             StringifyJs(asset_prefix),
         )?;
 
-        match this.chunking_context.await?.runtime_type() {
+        match *this.chunking_context.runtime_type().await? {
             RuntimeType::Development => {
                 let runtime_code = turbopack_ecmascript_runtime::get_nodejs_runtime_code(
                     this.chunking_context.environment(),
@@ -132,7 +132,7 @@ impl OutputAsset for EcmascriptBuildNodeRuntimeChunk {
 
         Ok(this
             .chunking_context
-            .chunk_path(Some(Vc::upcast(self)), ident, rcstr!(".js")))
+            .chunk_path(Some(Vc::upcast(self)), ident, None, rcstr!(".js")))
     }
 
     #[turbo_tasks::function]

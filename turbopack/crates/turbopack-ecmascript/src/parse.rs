@@ -218,7 +218,7 @@ async fn parse_internal(
     transforms: Vc<EcmascriptInputTransforms>,
 ) -> Result<Vc<ParseResult>> {
     let content = source.content();
-    let fs_path_vc = source.ident().path().await?.clone_value();
+    let fs_path_vc = source.ident().path().owned().await?;
     let fs_path = fs_path_vc.clone();
     let ident = &*source.ident().to_string().await?;
     let file_path_hash = hash_xxh3_hash64(&*source.ident().to_string().await?) as u128;
@@ -310,14 +310,14 @@ async fn parse_file_content(
     let (emitter, collector) = IssueEmitter::new(
         source,
         source_map.clone(),
-        Some("Ecmascript file had an error".into()),
+        Some(rcstr!("Ecmascript file had an error")),
     );
     let handler = Handler::with_emitter(true, false, Box::new(emitter));
 
     let (emitter, collector_parse) = IssueEmitter::new(
         source,
         source_map.clone(),
-        Some("Parsing ecmascript source code failed".into()),
+        Some(rcstr!("Parsing ecmascript source code failed")),
     );
     let parser_handler = Handler::with_emitter(true, false, Box::new(emitter));
     let globals = Arc::new(Globals::new());
@@ -497,7 +497,7 @@ async fn parse_file_content(
             });
 
             let eval_context = EvalContext::new(
-                &parsed_program,
+                Some(&parsed_program),
                 unresolved_mark,
                 top_level_mark,
                 Arc::new(var_with_ts_declare),

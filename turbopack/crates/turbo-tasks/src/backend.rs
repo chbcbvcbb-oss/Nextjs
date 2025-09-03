@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use tracing::Span;
 use turbo_rcstr::RcStr;
 
-pub use crate::id::BackendJobId;
 use crate::{
     RawVc, ReadCellOptions, ReadRef, SharedReference, TaskId, TaskIdSet, TraitRef, TraitTypeId,
     TurboTasksPanic, ValueTypeId, VcRead, VcValueTrait, VcValueType,
@@ -213,7 +212,7 @@ mod ser {
                 unreachable!();
             };
             let mut state = serializer.serialize_seq(Some(2))?;
-            state.serialize_element(native_fn.global_name())?;
+            state.serialize_element(native_fn.global_name)?;
             let arg = *arg;
             let arg = native_fn.arg_meta.as_serialize(arg);
             state.serialize_element(arg)?;
@@ -447,7 +446,7 @@ pub enum TurboTasksExecutionError {
 }
 
 impl TurboTasksExecutionError {
-    pub fn task_context(&self, task: impl Display) -> Self {
+    pub fn with_task_context(&self, task: impl Display) -> Self {
         TurboTasksExecutionError::TaskContext(Arc::new(TurboTaskContextError {
             task: RcStr::from(task.to_string()),
             source: Some(self.clone()),
@@ -582,9 +581,11 @@ pub trait Backend: Sync + Send {
         turbo_tasks: &dyn TurboTasksBackendApi<Self>,
     ) -> bool;
 
+    type BackendJob: Send + 'static;
+
     fn run_backend_job<'a>(
         &'a self,
-        id: BackendJobId,
+        job: Self::BackendJob,
         turbo_tasks: &'a dyn TurboTasksBackendApi<Self>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 

@@ -22,6 +22,7 @@ import { setGlobal } from '../../trace'
 import { isCI } from '../../server/ci-info'
 import { backgroundLogCompilationEvents } from '../../shared/lib/turbopack/compilation-events'
 import { getSupportedBrowsers } from '../utils'
+import { normalizePath } from '../../lib/normalize-path'
 
 export async function turbopackBuild(): Promise<{
   duration: number
@@ -49,13 +50,14 @@ export async function turbopackBuild(): Promise<{
   const bindings = await loadBindings(config?.experimental?.useWasmBinary)
   const dev = false
 
-  const supportedBrowsers = await getSupportedBrowsers(dir, dev)
+  const supportedBrowsers = getSupportedBrowsers(dir, dev)
 
   const persistentCaching = isPersistentCachingEnabled(config)
+  const rootPath = config.turbopack?.root || config.outputFileTracingRoot || dir
   const project = await bindings.turbo.createProject(
     {
-      projectPath: dir,
       rootPath: config.turbopack?.root || config.outputFileTracingRoot || dir,
+      projectPath: normalizePath(path.relative(rootPath, dir) || '.'),
       distDir,
       nextConfig: config,
       jsConfig: await getTurbopackJsConfig(dir, config),
@@ -89,6 +91,7 @@ export async function turbopackBuild(): Promise<{
       memoryLimit: config.experimental?.turbopackMemoryLimit,
       dependencyTracking: persistentCaching,
       isCi: isCI,
+      isShortSession: true,
     }
   )
   try {
@@ -176,13 +179,19 @@ export async function turbopackBuild(): Promise<{
     await Promise.all(promises)
 
     await Promise.all([
-      manifestLoader.loadBuildManifest('_app'),
-      manifestLoader.loadPagesManifest('_app'),
-      manifestLoader.loadFontManifest('_app'),
-      manifestLoader.loadPagesManifest('_document'),
-      manifestLoader.loadBuildManifest('_error'),
-      manifestLoader.loadPagesManifest('_error'),
-      manifestLoader.loadFontManifest('_error'),
+      // Only load pages router manifests if not app-only
+      ...(!appDirOnly
+        ? [
+            manifestLoader.loadBuildManifest('_app'),
+            manifestLoader.loadPagesManifest('_app'),
+            manifestLoader.loadFontManifest('_app'),
+            manifestLoader.loadPagesManifest('_document'),
+            manifestLoader.loadClientBuildManifest('_error'),
+            manifestLoader.loadBuildManifest('_error'),
+            manifestLoader.loadPagesManifest('_error'),
+            manifestLoader.loadFontManifest('_error'),
+          ]
+        : []),
       entrypoints.instrumentation &&
         manifestLoader.loadMiddlewareManifest(
           'instrumentation',

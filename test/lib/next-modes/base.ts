@@ -36,11 +36,11 @@ export interface NextInstanceOpts {
   nextConfig?: NextConfig
   installCommand?: InstallCommand
   buildCommand?: string
-  buildOptions?: string[]
+  buildArgs?: string[]
   startCommand?: string
-  startOptions?: string[]
+  startArgs?: string[]
   env?: Record<string, string>
-  dirSuffix?: string
+  subDir?: string
   turbo?: boolean
   forcedPort?: string
   serverReadyPattern?: RegExp
@@ -68,9 +68,9 @@ export class NextInstance {
   protected nextConfig?: NextConfig
   protected installCommand?: InstallCommand
   public buildCommand?: string
-  public buildOptions?: string
+  public buildArgs?: string[]
   protected startCommand?: string
-  protected startOptions?: string[]
+  protected startArgs?: string[]
   protected dependencies?: PackageJson['dependencies'] = {}
   protected resolutions?: PackageJson['resolutions']
   protected events: { [eventName: string]: Set<any> } = {}
@@ -85,7 +85,7 @@ export class NextInstance {
   protected basePath?: string
   public env: Record<string, string>
   public forcedPort?: string
-  public dirSuffix: string = ''
+  public subDir: string = ''
   public startServerTimeout: number = 10_000 // 10 seconds
   public serverReadyPattern: RegExp = / ✓ Ready in /
   patchFileDelay: number = 0
@@ -201,9 +201,8 @@ export class NextInstance {
           : process.env.NEXT_TEST_DIR || (await fs.realpath(os.tmpdir()))
         this.testDir = path.join(
           tmpDir,
-          `next-test-${Date.now()}-${(Math.random() * 1000) | 0}${
-            this.dirSuffix
-          }`
+          `next-test-${Date.now()}-${(Math.random() * 1000) | 0}`,
+          this.subDir
         )
 
         const reactVersion =
@@ -273,7 +272,7 @@ export class NextInstance {
               resolutions: this.resolutions ?? null,
               installCommand: this.installCommand,
               packageJson: this.packageJson,
-              dirSuffix: this.dirSuffix,
+              subDir: this.subDir,
               keepRepoDir: true,
               beforeInstall: async (span, installDir) => {
                 this.testDir = installDir
@@ -330,6 +329,19 @@ export class NextInstance {
               ).replace(/"__func_[\d]{1,}"/g, function (str) {
                 return functions.shift()!
               })
+          )
+        }
+
+        const tsConfigTestFile = testDirFiles.find(
+          (file) => file === 'tsconfig.test.json'
+        )
+        if (tsConfigTestFile) {
+          require('console').log(
+            'tsconfig.test.json found, using it for this test'
+          )
+          await fs.copyFile(
+            path.join(this.testDir, 'tsconfig.test.json'),
+            path.join(this.testDir, 'tsconfig.json')
           )
         }
 
@@ -432,7 +444,10 @@ export class NextInstance {
     await this.writeInitialFiles()
   }
 
-  public async build(): Promise<{
+  public async build(options?: {
+    env?: Record<string, string>
+    args?: string[]
+  }): Promise<{
     exitCode: NodeJS.Signals | number | null
     cliOutput: string
   }> {
@@ -446,7 +461,7 @@ export class NextInstance {
     }
   }
 
-  public async start(useDirArg: boolean = false): Promise<void> {}
+  public async start(options?: { skipBuild?: boolean }): Promise<void> {}
 
   public async stop(
     signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGKILL'
@@ -700,8 +715,8 @@ export class NextInstance {
     const [browser, response] = await Promise.all([
       webdriver(this.url, url, {
         ...options,
-        beforePageLoad(page: Page) {
-          options.beforePageLoad?.(page)
+        async beforePageLoad(page: Page) {
+          await options.beforePageLoad?.(page)
 
           page.on('response', async (response) => {
             if (response.url() === absoluteUrl) {

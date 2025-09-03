@@ -4,7 +4,6 @@ import { check } from 'next-test-utils'
 
 const CACHE_HEADERS = {
   NONE: 'no-cache, no-store',
-  LONG: 'public, immutable, no-transform, max-age=31536000',
   REVALIDATE: 'public, max-age=0, must-revalidate',
 }
 
@@ -52,7 +51,7 @@ describe('app dir - metadata dynamic routes', () => {
 
       expect(text).toMatchInlineSnapshot(`
       "<?xml version="1.0" encoding="UTF-8"?>
-      <urlset xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
       <url>
       <loc>https://example.com</loc>
       <lastmod>2021-01-01</lastmod>
@@ -95,7 +94,7 @@ describe('app dir - metadata dynamic routes', () => {
     it('should support alternate.languages in sitemap', async () => {
       const xml = await (await next.fetch('/lang/sitemap.xml')).text()
 
-      expect(xml).toContain('xmlns:xhtml="https://www.w3.org/1999/xhtml')
+      expect(xml).toContain('xmlns:xhtml="http://www.w3.org/1999/xhtml')
       expect(xml).toContain(
         `<xhtml:link rel="alternate" hreflang="es" href="https://example.com/es/about" />`
       )
@@ -119,7 +118,7 @@ describe('app dir - metadata dynamic routes', () => {
       const xml = await (await next.fetch('/sitemap-video/sitemap.xml')).text()
       expect(xml).toMatchInlineSnapshot(`
         "<?xml version="1.0" encoding="UTF-8"?>
-        <urlset xmlns="https://www.sitemaps.org/schemas/sitemap/0.9" xmlns:video="https://www.google.com/schemas/sitemap-video/1.1">
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
         <url>
         <loc>https://example.com/about</loc>
         <video:video>
@@ -209,7 +208,7 @@ describe('app dir - metadata dynamic routes', () => {
 
       expect(res.headers.get('content-type')).toBe('image/png')
       expect(res.headers.get('cache-control')).toBe(
-        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.LONG
+        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.REVALIDATE
       )
     })
 
@@ -219,7 +218,7 @@ describe('app dir - metadata dynamic routes', () => {
 
       expect(res.headers.get('content-type')).toBe('image/png')
       expect(res.headers.get('cache-control')).toBe(
-        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.LONG
+        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.REVALIDATE
       )
 
       if (isNextDev) {
@@ -241,7 +240,7 @@ describe('app dir - metadata dynamic routes', () => {
       res = await next.fetch('/twitter-image2')
       expect(res.headers.get('content-type')).toBe('image/png')
       expect(res.headers.get('cache-control')).toBe(
-        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.LONG
+        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.REVALIDATE
       )
     })
 
@@ -330,16 +329,6 @@ describe('app dir - metadata dynamic routes', () => {
       // should already normalize the parallel routes segment to url
       expect(ogImageUrl).not.toContain('(group)')
     })
-
-    it('should handle custom fonts in both edge and nodejs runtime', async () => {
-      const resOgEdge = await next.fetch('/font/opengraph-image')
-      const resOgNodejs = await next.fetch('/font/opengraph-image2')
-
-      expect(resOgEdge.status).toBe(200)
-      expect(resOgEdge.headers.get('content-type')).toBe('image/png')
-      expect(resOgNodejs.status).toBe(200)
-      expect(resOgNodejs.headers.get('content-type')).toBe('image/png')
-    })
   })
 
   describe('icon image routes', () => {
@@ -348,7 +337,7 @@ describe('app dir - metadata dynamic routes', () => {
 
       expect(res.headers.get('content-type')).toBe('image/png')
       expect(res.headers.get('cache-control')).toBe(
-        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.LONG
+        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.REVALIDATE
       )
     })
 
@@ -357,7 +346,7 @@ describe('app dir - metadata dynamic routes', () => {
 
       expect(res.headers.get('content-type')).toBe('image/png')
       expect(res.headers.get('cache-control')).toBe(
-        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.LONG
+        isNextDev ? CACHE_HEADERS.NONE : CACHE_HEADERS.REVALIDATE
       )
     })
   })

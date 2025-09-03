@@ -81,9 +81,9 @@ pub async fn endpoint_write_to_disk(
         ..
     } = *output_op.connect().await?;
 
-    let _ = project
+    project
         .emit_all_output_assets(endpoint_output_assets_operation(output_op))
-        .resolve()
+        .as_side_effect()
         .await?;
 
     Ok(*output_paths)
@@ -147,7 +147,7 @@ pub struct EndpointOutput {
 pub enum EndpointOutputPaths {
     NodeJs {
         /// Relative to the root_path
-        server_entry_path: String,
+        server_entry_path: RcStr,
         server_paths: Vec<ServerPath>,
         client_paths: Vec<RcStr>,
     },

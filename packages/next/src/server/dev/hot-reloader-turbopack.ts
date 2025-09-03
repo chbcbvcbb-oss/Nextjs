@@ -1,6 +1,6 @@
 import type { Socket } from 'net'
 import { mkdir, writeFile } from 'fs/promises'
-import { join, extname } from 'path'
+import { join, extname, relative } from 'path'
 import { pathToFileURL } from 'url'
 
 import ws from 'next/dist/compiled/ws'
@@ -9,13 +9,13 @@ import type { OutputState } from '../../build/output/store'
 import { store as consoleStore } from '../../build/output/store'
 import type {
   CompilationError,
-  HMR_ACTION_TYPES,
+  HmrMessageSentToBrowser,
   NextJsHotReloaderInterface,
-  ReloadPageAction,
-  SyncAction,
-  TurbopackConnectedAction,
+  ReloadPageMessage,
+  SyncMessage,
+  TurbopackConnectedMessage,
 } from './hot-reloader-types'
-import { HMR_ACTIONS_SENT_TO_BROWSER } from './hot-reloader-types'
+import { HMR_MESSAGE_SENT_TO_BROWSER } from './hot-reloader-types'
 import type {
   Update as TurbopackUpdate,
   Endpoint,
@@ -37,7 +37,7 @@ import {
 } from './middleware-turbopack'
 import { PageNotFoundError } from '../../shared/lib/utils'
 import { debounce } from '../utils'
-import { deleteCache, deleteFromRequireCache } from './require-cache'
+import { deleteCache } from './require-cache'
 import {
   clearAllModuleContexts,
   clearModuleContext,
@@ -98,6 +98,12 @@ import { getDisableDevIndicatorMiddleware } from '../../next-devtools/server/dev
 import { getRestartDevServerMiddleware } from '../../next-devtools/server/restart-dev-server-middleware'
 import { backgroundLogCompilationEvents } from '../../shared/lib/turbopack/compilation-events'
 import { getSupportedBrowsers } from '../../build/utils'
+import { receiveBrowserLogsTurbopack } from './browser-logs/receive-logs'
+import { normalizePath } from '../../lib/normalize-path'
+import {
+  devToolsConfigMiddleware,
+  getDevToolsConfig,
+} from '../../next-devtools/server/devtools-config-middleware'
 
 const wsServer = new ws.Server({ noServer: true })
 const isTestMode = !!(
@@ -107,6 +113,8 @@ const isTestMode = !!(
 )
 
 const sessionId = Math.floor(Number.MAX_SAFE_INTEGER * Math.random())
+
+declare const __next__clear_chunk_cache__: (() => void) | null | undefined
 
 /**
  * Replaces turbopack:///[project] with the specified project in the `source` field.
@@ -203,16 +211,17 @@ export async function createHotReloaderTurbopack(
     // TODO this need to be set correctly for persistent caching to work
   }
 
-  const supportedBrowsers = await getSupportedBrowsers(projectPath, dev)
+  const supportedBrowsers = getSupportedBrowsers(projectPath, dev)
   const currentNodeJsVersion = process.versions.node
 
+  const rootPath =
+    opts.nextConfig.turbopack?.root ||
+    opts.nextConfig.outputFileTracingRoot ||
+    projectPath
   const project = await bindings.turbo.createProject(
     {
-      projectPath: projectPath,
-      rootPath:
-        opts.nextConfig.turbopack?.root ||
-        opts.nextConfig.outputFileTracingRoot ||
-        projectPath,
+      rootPath,
+      projectPath: normalizePath(relative(rootPath, projectPath) || '.'),
       distDir,
       nextConfig: opts.nextConfig,
       jsConfig: await getTurbopackJsConfig(projectPath, nextConfig),
@@ -245,10 +254,11 @@ export async function createHotReloaderTurbopack(
     {
       persistentCaching: isPersistentCachingEnabled(opts.nextConfig),
       memoryLimit: opts.nextConfig.experimental?.turbopackMemoryLimit,
+      isShortSession: false,
     }
   )
   backgroundLogCompilationEvents(project, {
-    eventTypes: ['StartupCacheInvalidationEvent'],
+    eventTypes: ['StartupCacheInvalidationEvent', 'TimingEvent'],
   })
   setBundlerFindSourceMapImplementation(
     getSourceMapFromTurbopack.bind(null, project, projectPath)
@@ -306,6 +316,10 @@ export async function createHotReloaderTurbopack(
   ): boolean {
     if (force) {
       for (const { path, contentHash } of writtenEndpoint.serverPaths) {
+        // We ignore source maps
+        if (path.endsWith('.map')) continue
+        const localKey = `${key}:${path}`
+        serverPathState.set(localKey, contentHash)
         serverPathState.set(path, contentHash)
       }
     } else {
@@ -322,11 +336,11 @@ export async function createHotReloaderTurbopack(
           (globalHash && globalHash !== contentHash)
         ) {
           hasChange = true
-          serverPathState.set(key, contentHash)
+          serverPathState.set(localKey, contentHash)
           serverPathState.set(path, contentHash)
         } else {
           if (!localHash) {
-            serverPathState.set(key, contentHash)
+            serverPathState.set(localKey, contentHash)
           }
           if (!globalHash) {
             serverPathState.set(path, contentHash)
@@ -341,21 +355,11 @@ export async function createHotReloaderTurbopack(
 
     resetFetch()
 
-    const hasAppPaths = writtenEndpoint.serverPaths.some(({ path: p }) =>
-      p.startsWith('server/app')
-    )
-
-    if (hasAppPaths) {
-      deleteFromRequireCache(
-        require.resolve(
-          'next/dist/compiled/next-server/app-page-turbo.runtime.dev.js'
-        )
-      )
-      deleteFromRequireCache(
-        require.resolve(
-          'next/dist/compiled/next-server/app-page-turbo-experimental.runtime.dev.js'
-        )
-      )
+    // Not available in:
+    // - Pages Router (no server-side HMR)
+    // - Edge Runtime (uses browser runtime which already disposes chunks individually)
+    if (typeof __next__clear_chunk_cache__ === 'function') {
+      __next__clear_chunk_cache__()
     }
 
     const serverPaths = writtenEndpoint.serverPaths.map(({ path: p }) =>
@@ -411,8 +415,8 @@ export async function createHotReloaderTurbopack(
   const clients = new Set<ws>()
   const clientStates = new WeakMap<ws, ClientState>()
 
-  function sendToClient(client: ws, payload: HMR_ACTION_TYPES) {
-    client.send(JSON.stringify(payload))
+  function sendToClient(client: ws, message: HmrMessageSentToBrowser) {
+    client.send(JSON.stringify(message))
   }
 
   function sendEnqueuedMessages() {
@@ -442,14 +446,14 @@ export async function createHotReloaderTurbopack(
         }
       }
 
-      for (const payload of state.hmrPayloads.values()) {
-        sendToClient(client, payload)
+      for (const message of state.messages.values()) {
+        sendToClient(client, message)
       }
-      state.hmrPayloads.clear()
+      state.messages.clear()
 
       if (state.turbopackUpdates.length > 0) {
         sendToClient(client, {
-          action: HMR_ACTIONS_SENT_TO_BROWSER.TURBOPACK_MESSAGE,
+          type: HMR_MESSAGE_SENT_TO_BROWSER.TURBOPACK_MESSAGE,
           data: state.turbopackUpdates,
         })
         state.turbopackUpdates.length = 0
@@ -458,9 +462,9 @@ export async function createHotReloaderTurbopack(
   }
   const sendEnqueuedMessagesDebounce = debounce(sendEnqueuedMessages, 2)
 
-  const sendHmr: SendHmr = (id: string, payload: HMR_ACTION_TYPES) => {
+  const sendHmr: SendHmr = (id: string, message: HmrMessageSentToBrowser) => {
     for (const client of clients) {
-      clientStates.get(client)?.hmrPayloads.set(id, payload)
+      clientStates.get(client)?.messages.set(id, message)
     }
 
     hmrEventHappened = true
@@ -486,13 +490,13 @@ export async function createHotReloaderTurbopack(
     key: EntryKey,
     includeIssues: boolean,
     endpoint: Endpoint,
-    makePayload: (
+    createMessage: (
       change: TurbopackResult,
       hash: string
-    ) => Promise<HMR_ACTION_TYPES> | HMR_ACTION_TYPES | void,
+    ) => Promise<HmrMessageSentToBrowser> | HmrMessageSentToBrowser | void,
     onError?: (
       error: Error
-    ) => Promise<HMR_ACTION_TYPES> | HMR_ACTION_TYPES | void
+    ) => Promise<HmrMessageSentToBrowser> | HmrMessageSentToBrowser | void
   ) {
     if (changeSubscriptions.has(key)) {
       return
@@ -508,9 +512,9 @@ export async function createHotReloaderTurbopack(
       for await (const change of changed) {
         processIssues(currentEntryIssues, key, change, false, true)
         // TODO: Get an actual content hash from Turbopack.
-        const payload = await makePayload(change, String(++hmrHash))
-        if (payload) {
-          sendHmr(key, payload)
+        const message = await createMessage(change, String(++hmrHash))
+        if (message) {
+          sendHmr(key, message)
         }
       }
     } catch (e) {
@@ -564,11 +568,11 @@ export async function createHotReloaderTurbopack(
       // to fully reload the page to resolve the issue. We can't use
       // `hotReloader.send` since that would force every connected client to
       // reload, only this client is out of date.
-      const reloadAction: ReloadPageAction = {
-        action: HMR_ACTIONS_SENT_TO_BROWSER.RELOAD_PAGE,
+      const reloadMessage: ReloadPageMessage = {
+        type: HMR_MESSAGE_SENT_TO_BROWSER.RELOAD_PAGE,
         data: `error in HMR event subscription for ${id}: ${e}`,
       }
-      sendToClient(client, reloadAction)
+      sendToClient(client, reloadMessage)
       client.close()
       return
     }
@@ -663,6 +667,15 @@ export async function createHotReloaderTurbopack(
       telemetry: opts.telemetry,
       turbopackProject: project,
     }),
+    devToolsConfigMiddleware({
+      distDir,
+      sendUpdateSignal: (data) => {
+        hotReloader.send({
+          type: HMR_MESSAGE_SENT_TO_BROWSER.DEVTOOLS_CONFIG,
+          data,
+        })
+      },
+    }),
   ]
 
   const versionInfoPromise = getVersionInfo()
@@ -738,7 +751,7 @@ export async function createHotReloaderTurbopack(
         clients.add(client)
         clientStates.set(client, {
           clientIssues,
-          hmrPayloads: new Map(),
+          messages: new Map(),
           turbopackUpdates: [],
           subscriptions,
         })
@@ -752,7 +765,7 @@ export async function createHotReloaderTurbopack(
           clients.delete(client)
         })
 
-        client.addEventListener('message', ({ data }) => {
+        client.addEventListener('message', async ({ data }) => {
           const parsedData = JSON.parse(
             typeof data !== 'string' ? data.toString() : data
           )
@@ -780,6 +793,7 @@ export async function createHotReloaderTurbopack(
                 }
               )
               break
+
             case 'client-error': // { errorCount, clientId }
             case 'client-warning': // { warningCount, clientId }
             case 'client-success': // { clientId }
@@ -806,6 +820,20 @@ export async function createHotReloaderTurbopack(
             case 'client-added-page':
               // TODO
               break
+            case 'browser-logs': {
+              if (nextConfig.experimental.browserDebugInfoInTerminal) {
+                await receiveBrowserLogsTurbopack({
+                  entries: parsedData.entries,
+                  router: parsedData.router,
+                  sourceType: parsedData.sourceType,
+                  project,
+                  projectPath,
+                  distDir,
+                  config: nextConfig.experimental.browserDebugInfoInTerminal,
+                })
+              }
+              break
+            }
 
             default:
               // Might be a Turbopack message...
@@ -831,11 +859,11 @@ export async function createHotReloaderTurbopack(
           }
         })
 
-        const turbopackConnected: TurbopackConnectedAction = {
-          action: HMR_ACTIONS_SENT_TO_BROWSER.TURBOPACK_CONNECTED,
+        const turbopackConnectedMessage: TurbopackConnectedMessage = {
+          type: HMR_MESSAGE_SENT_TO_BROWSER.TURBOPACK_CONNECTED,
           data: { sessionId },
         }
-        sendToClient(client, turbopackConnected)
+        sendToClient(client, turbopackConnectedMessage)
 
         const errors: CompilationError[] = []
 
@@ -857,9 +885,10 @@ export async function createHotReloaderTurbopack(
 
         ;(async function () {
           const versionInfo = await versionInfoPromise
+          const devToolsConfig = await getDevToolsConfig(distDir)
 
-          const sync: SyncAction = {
-            action: HMR_ACTIONS_SENT_TO_BROWSER.SYNC,
+          const syncMessage: SyncMessage = {
+            type: HMR_MESSAGE_SENT_TO_BROWSER.SYNC,
             errors,
             warnings: [],
             hash: '',
@@ -868,9 +897,10 @@ export async function createHotReloaderTurbopack(
               devtoolsFrontendUrl,
             },
             devIndicator: devIndicatorServerState,
+            devToolsConfig,
           }
 
-          sendToClient(client, sync)
+          sendToClient(client, syncMessage)
         })()
       })
     },
@@ -946,7 +976,7 @@ export async function createHotReloaderTurbopack(
 
         await clearAllModuleContexts()
         this.send({
-          action: HMR_ACTIONS_SENT_TO_BROWSER.SERVER_COMPONENT_CHANGES,
+          type: HMR_MESSAGE_SENT_TO_BROWSER.SERVER_COMPONENT_CHANGES,
           hash: String(++hmrHash),
         })
       }
@@ -1137,7 +1167,7 @@ export async function createHotReloaderTurbopack(
     for await (const updateMessage of project.updateInfoSubscribe(30)) {
       switch (updateMessage.updateType) {
         case 'start': {
-          hotReloader.send({ action: HMR_ACTIONS_SENT_TO_BROWSER.BUILDING })
+          hotReloader.send({ type: HMR_MESSAGE_SENT_TO_BROWSER.BUILDING })
           break
         }
         case 'end': {
@@ -1177,7 +1207,7 @@ export async function createHotReloaderTurbopack(
             addErrors(clientErrors, state.clientIssues)
 
             sendToClient(client, {
-              action: HMR_ACTIONS_SENT_TO_BROWSER.BUILT,
+              type: HMR_MESSAGE_SENT_TO_BROWSER.BUILT,
               hash: String(++hmrHash),
               errors: [...clientErrors.values()],
               warnings: [],

@@ -266,7 +266,7 @@ async fn source(
 
     let output_fs = output_fs(project_dir);
     let fs: Vc<Box<dyn FileSystem>> = project_fs(root_dir, /* watch= */ true);
-    let root_path = fs.root().await?.clone_value();
+    let root_path = fs.root().owned().await?;
     let project_path = root_path.join(&project_relative)?;
 
     let env = load_env(root_path.clone());
@@ -294,7 +294,7 @@ async fn source(
         ExecutionContext::new(root_path.clone(), Vc::upcast(build_chunking_context), env);
 
     let server_fs = Vc::upcast::<Box<dyn FileSystem>>(ServerFileSystem::new());
-    let server_root = server_fs.root().await?.clone_value();
+    let server_root = server_fs.root().owned().await?;
     let entry_requests = entry_requests
         .iter()
         .map(|r| match r {
@@ -305,7 +305,7 @@ async fn source(
                 false,
             ),
             EntryRequest::Module(m, p) => Request::module(
-                m.clone(),
+                m.clone().into(),
                 p.clone().into(),
                 Default::default(),
                 Default::default(),
@@ -355,7 +355,6 @@ pub async fn start_server(args: &DevArguments) -> Result<()> {
 
     #[cfg(feature = "tokio_console")]
     console_subscriber::init();
-    crate::register();
 
     let NormalizedDirs {
         project_dir,

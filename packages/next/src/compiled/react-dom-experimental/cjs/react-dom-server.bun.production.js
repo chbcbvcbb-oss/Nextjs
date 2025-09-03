@@ -3922,6 +3922,9 @@ function getViewTransitionClassName(defaultClass, eventClass) {
       ? null
       : eventClass;
 }
+function isEligibleForOutlining(request, boundary) {
+  return 500 < boundary.byteSize && null === boundary.contentPreamble;
+}
 function defaultErrorHandler(error) {
   if (
     "object" === typeof error &&
@@ -3942,7 +3945,7 @@ function defaultErrorHandler(error) {
       : error.splice(
           0,
           0,
-          "%c%s%c ",
+          "%c%s%c",
           "background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px",
           " " + JSCompiler_inline_result + " ",
           ""
@@ -4219,6 +4222,13 @@ function pushComponentStack(task) {
         task.componentStack = { parent: task.componentStack, type: node.type };
     }
 }
+function replaceSuspenseComponentStackWithSuspenseFallbackStack(
+  componentStack
+) {
+  return null === componentStack
+    ? null
+    : { parent: componentStack.parent, type: "Suspense Fallback" };
+}
 function getThrownInfo(node$jscomp$0) {
   var errorInfo = {};
   node$jscomp$0 &&
@@ -4296,7 +4306,7 @@ function tryToResolveTogetherRow(request, togetherRow) {
       if (
         1 !== rowBoundary.pendingTasks ||
         rowBoundary.parentFlushed ||
-        500 < rowBoundary.byteSize
+        isEligibleForOutlining(request, rowBoundary)
       ) {
         allCompleteAndInlinable = !1;
         break;
@@ -4665,25 +4675,21 @@ function renderElement(request, task, keyPath, type, props, ref) {
           !1
         );
         segment.preambleChildren.push(preambleSegment);
-        var preambleTask = createRenderTask(
-          request,
-          null,
-          children$43,
-          -1,
-          task.blockedBoundary,
-          preambleSegment,
-          task.blockedPreamble,
-          task.hoistableState,
-          request.abortableTasks,
-          task.keyPath,
-          task.formatContext,
-          task.context,
-          task.treeContext,
-          task.row,
-          task.componentStack
-        );
-        pushComponentStack(preambleTask);
-        request.pingedTasks.push(preambleTask);
+        task.blockedSegment = preambleSegment;
+        try {
+          (preambleSegment.status = 6),
+            renderNode(request, task, children$43, -1),
+            pushSegmentFinale(
+              preambleSegment.chunks,
+              request.renderState,
+              preambleSegment.lastPushedText,
+              preambleSegment.textEmbedded
+            ),
+            (preambleSegment.status = 1),
+            finishedSegment(request, task.blockedBoundary, preambleSegment);
+        } finally {
+          task.blockedSegment = segment;
+        }
       } else renderNode(request, task, children$43, -1);
       task.formatContext = prevContext$44;
       task.keyPath = prevKeyPath$45;
@@ -5003,7 +5009,8 @@ function renderElement(request, task, keyPath, type, props, ref) {
           );
           contentRootSegment.parentFlushed = !0;
           if (null !== request.trackedPostpones) {
-            var fallbackKeyPath = [keyPath[0], "Suspense Fallback", keyPath[2]],
+            var suspenseComponentStack = task.componentStack,
+              fallbackKeyPath = [keyPath[0], "Suspense Fallback", keyPath[2]],
               fallbackReplayNode = [
                 fallbackKeyPath[1],
                 fallbackKeyPath[2],
@@ -5022,6 +5029,10 @@ function renderElement(request, task, keyPath, type, props, ref) {
               request.resumableState,
               prevContext$jscomp$1
             );
+            task.componentStack =
+              replaceSuspenseComponentStackWithSuspenseFallbackStack(
+                suspenseComponentStack
+              );
             boundarySegment.status = 6;
             try {
               renderNode(request, task, fallback, -1),
@@ -5062,7 +5073,7 @@ function renderElement(request, task, keyPath, type, props, ref) {
               task.context,
               task.treeContext,
               null,
-              task.componentStack
+              suspenseComponentStack
             );
             pushComponentStack(suspendedPrimaryTask);
             request.pingedTasks.push(suspendedPrimaryTask);
@@ -5092,7 +5103,10 @@ function renderElement(request, task, keyPath, type, props, ref) {
                 queueCompletedSegment(newBoundary, contentRootSegment),
                 0 === newBoundary.pendingTasks && 0 === newBoundary.status)
               ) {
-                if (((newBoundary.status = 1), !(500 < newBoundary.byteSize))) {
+                if (
+                  ((newBoundary.status = 1),
+                  !isEligibleForOutlining(request, newBoundary))
+                ) {
                   null !== prevRow$jscomp$0 &&
                     0 === --prevRow$jscomp$0.pendingTasks &&
                     finishSuspenseListRow(request, prevRow$jscomp$0);
@@ -5150,7 +5164,9 @@ function renderElement(request, task, keyPath, type, props, ref) {
               task.context,
               task.treeContext,
               task.row,
-              task.componentStack
+              replaceSuspenseComponentStackWithSuspenseFallbackStack(
+                task.componentStack
+              )
             );
             pushComponentStack(suspendedFallbackTask);
             request.pingedTasks.push(suspendedFallbackTask);
@@ -5466,7 +5482,9 @@ function retryNode(request, task) {
                         task.context,
                         task.treeContext,
                         task.row,
-                        task.componentStack
+                        replaceSuspenseComponentStackWithSuspenseFallbackStack(
+                          task.componentStack
+                        )
                       );
                       pushComponentStack(task);
                       request.pingedTasks.push(task);
@@ -5821,10 +5839,13 @@ function renderNode(request, task, node, childIndex) {
           thrownValue === SuspenseException
             ? getSuspendedThenable()
             : thrownValue),
-        "object" === typeof node && null !== node)
+        12 !== request.status && "object" === typeof node && null !== node)
       ) {
         if ("function" === typeof node.then) {
-          childIndex = getThenableStateAfterSuspending();
+          childIndex =
+            thrownValue === SuspenseException
+              ? getThenableStateAfterSuspending()
+              : null;
           request = spawnNewSuspendedReplayTask(request, task, childIndex).ping;
           node.then(request, request);
           task.formatContext = previousFormatContext;
@@ -5837,7 +5858,10 @@ function renderNode(request, task, node, childIndex) {
           return;
         }
         if ("Maximum call stack size exceeded" === node.message) {
-          node = getThenableStateAfterSuspending();
+          node =
+            thrownValue === SuspenseException
+              ? getThenableStateAfterSuspending()
+              : null;
           node = spawnNewSuspendedReplayTask(request, task, node);
           request.pingedTasks.push(node);
           task.formatContext = previousFormatContext;
@@ -5865,11 +5889,14 @@ function renderNode(request, task, node, childIndex) {
           thrownValue$69 === SuspenseException
             ? getSuspendedThenable()
             : thrownValue$69),
-        "object" === typeof node && null !== node)
+        12 !== request.status && "object" === typeof node && null !== node)
       ) {
         if ("function" === typeof node.then) {
           segment = node;
-          node = getThenableStateAfterSuspending();
+          node =
+            thrownValue$69 === SuspenseException
+              ? getThenableStateAfterSuspending()
+              : null;
           request = spawnNewSuspendedRenderTask(request, task, node).ping;
           segment.then(request, request);
           task.formatContext = previousFormatContext;
@@ -5909,7 +5936,10 @@ function renderNode(request, task, node, childIndex) {
           return;
         }
         if ("Maximum call stack size exceeded" === node.message) {
-          segment = getThenableStateAfterSuspending();
+          segment =
+            thrownValue$69 === SuspenseException
+              ? getThenableStateAfterSuspending()
+              : null;
           segment = spawnNewSuspendedRenderTask(request, task, segment);
           request.pingedTasks.push(segment);
           task.formatContext = previousFormatContext;
@@ -6258,7 +6288,7 @@ function finishedTask(request, boundary, row, segment) {
         (row = boundary.row),
           null !== row &&
             hoistHoistables(row.hoistables, boundary.contentState),
-          500 < boundary.byteSize ||
+          isEligibleForOutlining(request, boundary) ||
             (boundary.fallbackAbortableTasks.forEach(abortTaskSoft, request),
             boundary.fallbackAbortableTasks.clear(),
             null !== row &&
@@ -6368,7 +6398,10 @@ function performWork(request$jscomp$1) {
               ) {
                 var ping = task.ping;
                 x.then(ping, ping);
-                task.thenableState = getThenableStateAfterSuspending();
+                task.thenableState =
+                  thrownValue === SuspenseException
+                    ? getThenableStateAfterSuspending()
+                    : null;
               } else {
                 task.replay.pendingTasks--;
                 task.abortSet.delete(task);
@@ -6461,7 +6494,10 @@ function performWork(request$jscomp$1) {
                   if ("object" === typeof x$jscomp$0 && null !== x$jscomp$0) {
                     if ("function" === typeof x$jscomp$0.then) {
                       segment$jscomp$0.status = 0;
-                      task.thenableState = getThenableStateAfterSuspending();
+                      task.thenableState =
+                        thrownValue === SuspenseException
+                          ? getThenableStateAfterSuspending()
+                          : null;
                       var ping$jscomp$0 = task.ping;
                       x$jscomp$0.then(ping$jscomp$0, ping$jscomp$0);
                       break a;
@@ -6584,6 +6620,7 @@ function preparePreambleFromSegment(
   switch (boundary.status) {
     case 1:
       hoistPreambleState(request.renderState, preamble);
+      request.byteSize += boundary.byteSize;
       segment = boundary.completedSegments[0];
       if (!segment)
         throw Error(
@@ -6616,17 +6653,16 @@ function preparePreamble(request) {
     null === request.completedPreambleSegments
   ) {
     var collectedPreambleSegments = [],
+      originalRequestByteSize = request.byteSize,
       hasPendingPreambles = preparePreambleFromSegment(
         request,
         request.completedRootSegment,
         collectedPreambleSegments
       ),
       preamble = request.renderState.preamble;
-    if (
-      !1 === hasPendingPreambles ||
-      (preamble.headChunks && preamble.bodyChunks)
-    )
-      request.completedPreambleSegments = collectedPreambleSegments;
+    !1 === hasPendingPreambles || (preamble.headChunks && preamble.bodyChunks)
+      ? (request.completedPreambleSegments = collectedPreambleSegments)
+      : (request.byteSize = originalRequestByteSize);
   }
 }
 function flushSubtree(request, destination, segment, hoistableState) {
@@ -6701,7 +6737,7 @@ function flushSegment(request, destination, segment, hoistableState) {
       hoistableState && hoistHoistables(hoistableState, boundary.fallbackState),
       flushSubtree(request, destination, segment, hoistableState);
   else if (
-    500 < boundary.byteSize &&
+    isEligibleForOutlining(request, boundary) &&
     flushedByteSize + boundary.byteSize > request.progressiveChunkSize
   )
     (boundary.rootSegmentID = request.nextSegmentId++),
@@ -6717,7 +6753,7 @@ function flushSegment(request, destination, segment, hoistableState) {
     hoistableState && hoistHoistables(hoistableState, boundary.contentState);
     segment = boundary.row;
     null !== segment &&
-      500 < boundary.byteSize &&
+      isEligibleForOutlining(request, boundary) &&
       0 === --segment.pendingTasks &&
       finishSuspenseListRow(request, segment);
     destination.write("\x3c!--$--\x3e");
@@ -6756,7 +6792,7 @@ function flushCompletedBoundary(request, destination, boundary) {
   completedSegments.length = 0;
   completedSegments = boundary.row;
   null !== completedSegments &&
-    500 < boundary.byteSize &&
+    isEligibleForOutlining(request, boundary) &&
     0 === --completedSegments.pendingTasks &&
     finishSuspenseListRow(request, completedSegments);
   writeHoistablesForBoundary(
@@ -6786,7 +6822,7 @@ function flushCompletedBoundary(request, destination, boundary) {
             ((completedSegments.instructions |= 2),
             writeChunk(
               destination,
-              '$RB=[];$RV=function(b){$RT=performance.now();for(var a=0;a<b.length;a+=2){var c=b[a],e=b[a+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&g._reactRetry()}}b.length=0};\n$RC=function(b,a){if(a=document.getElementById(a))(b=document.getElementById(b))?(b.previousSibling.data="$~",$RB.push(b,a),2===$RB.length&&(b="number"!==typeof $RT?0:$RT,a=performance.now(),setTimeout($RV.bind(null,$RB),2300>a&&2E3<a?2300-a:b+300-a))):a.parentNode.removeChild(a)};'
+              '$RB=[];$RV=function(a){$RT=performance.now();for(var b=0;b<a.length;b+=2){var c=a[b],e=a[b+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&requestAnimationFrame(g._reactRetry)}}a.length=0};\n$RC=function(a,b){if(b=document.getElementById(b))(a=document.getElementById(a))?(a.previousSibling.data="$~",$RB.push(a,b),2===$RB.length&&("number"!==typeof $RT?requestAnimationFrame($RV.bind(null,$RB)):(a=performance.now(),setTimeout($RV.bind(null,$RB),2300>a&&2E3<a?2300-a:$RT+300-a)))):b.parentNode.removeChild(b)};'
             )),
           requiresViewTransitions &&
             0 === (completedSegments.instructions & 256) &&
@@ -6806,7 +6842,7 @@ function flushCompletedBoundary(request, destination, boundary) {
             ((completedSegments.instructions |= 2),
             writeChunk(
               destination,
-              '$RB=[];$RV=function(b){$RT=performance.now();for(var a=0;a<b.length;a+=2){var c=b[a],e=b[a+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&g._reactRetry()}}b.length=0};\n$RC=function(b,a){if(a=document.getElementById(a))(b=document.getElementById(b))?(b.previousSibling.data="$~",$RB.push(b,a),2===$RB.length&&(b="number"!==typeof $RT?0:$RT,a=performance.now(),setTimeout($RV.bind(null,$RB),2300>a&&2E3<a?2300-a:b+300-a))):a.parentNode.removeChild(a)};'
+              '$RB=[];$RV=function(a){$RT=performance.now();for(var b=0;b<a.length;b+=2){var c=a[b],e=a[b+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&requestAnimationFrame(g._reactRetry)}}a.length=0};\n$RC=function(a,b){if(b=document.getElementById(b))(a=document.getElementById(a))?(a.previousSibling.data="$~",$RB.push(a,b),2===$RB.length&&("number"!==typeof $RT?requestAnimationFrame($RV.bind(null,$RB)):(a=performance.now(),setTimeout($RV.bind(null,$RB),2300>a&&2E3<a?2300-a:$RT+300-a)))):b.parentNode.removeChild(b)};'
             )),
           requiresViewTransitions &&
             0 === (completedSegments.instructions & 256) &&
@@ -7255,15 +7291,15 @@ function addToReplayParent(node, parentKeyPath, trackedPostpones) {
     parentNode[2].push(node);
   }
 }
-var isomorphicReactPackageVersion$jscomp$inline_868 = React.version;
+var isomorphicReactPackageVersion$jscomp$inline_869 = React.version;
 if (
-  "19.2.0-experimental-73aa744b-20250702" !==
-  isomorphicReactPackageVersion$jscomp$inline_868
+  "19.2.0-experimental-2805f0ed-20250903" !==
+  isomorphicReactPackageVersion$jscomp$inline_869
 )
   throw Error(
     'Incompatible React versions: The "react" and "react-dom" packages must have the exact same version. Instead got:\n  - react:      ' +
-      (isomorphicReactPackageVersion$jscomp$inline_868 +
-        "\n  - react-dom:  19.2.0-experimental-73aa744b-20250702\nLearn more: https://react.dev/warnings/version-mismatch")
+      (isomorphicReactPackageVersion$jscomp$inline_869 +
+        "\n  - react-dom:  19.2.0-experimental-2805f0ed-20250903\nLearn more: https://react.dev/warnings/version-mismatch")
   );
 exports.renderToReadableStream = function (children, options) {
   return new Promise(function (resolve, reject) {
@@ -7354,4 +7390,4 @@ exports.renderToReadableStream = function (children, options) {
     startWork(request);
   });
 };
-exports.version = "19.2.0-experimental-73aa744b-20250702";
+exports.version = "19.2.0-experimental-2805f0ed-20250903";

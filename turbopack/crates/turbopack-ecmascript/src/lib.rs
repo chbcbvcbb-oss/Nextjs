@@ -42,7 +42,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chunk::EcmascriptChunkItem;
 use code_gen::{CodeGeneration, CodeGenerationHoistedStmt};
 use either::Either;
@@ -178,7 +178,6 @@ pub struct OptionTreeShaking(pub Option<TreeShakingMode>);
 #[turbo_tasks::value(shared)]
 #[derive(Hash, Debug, Default, Copy, Clone)]
 pub struct EcmascriptOptions {
-    pub refresh: bool,
     /// variant of tree shaking to use
     pub tree_shaking_mode: Option<TreeShakingMode>,
     /// module is forced to a specific type (happens e. g. for .cjs and .mjs)
@@ -201,6 +200,9 @@ pub struct EcmascriptOptions {
     /// parsing fails. This is useful to keep the module graph structure intact when syntax errors
     /// are temporarily introduced.
     pub keep_last_successful_parse: bool,
+    /// Whether the modules in this context are never chunked/codegen-ed, but only used for
+    /// tracing.
+    pub is_tracing: bool,
 }
 
 #[turbo_tasks::value]
@@ -694,7 +696,7 @@ impl EcmascriptChunkPlaceable for EcmascriptModuleAsset {
     ) -> Result<Vc<bool>> {
         // Check package.json first, so that we can skip parsing the module if it's marked that way.
         let pkg_side_effect_free = is_marked_as_side_effect_free(
-            self.ident().path().await?.clone_value(),
+            self.ident().path().owned().await?,
             side_effect_free_packages,
         );
         Ok(if *pkg_side_effect_free.await? {
@@ -810,7 +812,7 @@ impl EcmascriptChunkItem for ModuleChunkItem {
     ) -> Result<Vc<EcmascriptChunkItemContent>> {
         let span = tracing::info_span!(
             "code generation",
-            module = self.asset_ident().to_string().await?.to_string()
+            name = self.asset_ident().to_string().await?.to_string()
         );
         async {
             let this = self.await?;
@@ -824,14 +826,9 @@ impl EcmascriptChunkItem for ModuleChunkItem {
                 .module
                 .module_content(*this.chunking_context, async_module_info);
 
-            EcmascriptChunkItemContent::new(
-                content,
-                *this.chunking_context,
-                this.module.options(),
-                async_module_options,
-            )
-            .resolve()
-            .await
+            EcmascriptChunkItemContent::new(content, *this.chunking_context, async_module_options)
+                .resolve()
+                .await
         }
         .instrument(span)
         .await
@@ -856,8 +853,8 @@ pub struct EcmascriptModuleContentOptions {
     specified_module_type: SpecifiedModuleType,
     chunking_context: ResolvedVc<Box<dyn ChunkingContext>>,
     references: ResolvedVc<ModuleReferences>,
-    esm_references: ResolvedVc<EsmAssetReferences>,
     part_references: Vec<ResolvedVc<EcmascriptModulePartReference>>,
+    esm_references: ResolvedVc<EsmAssetReferences>,
     code_generation: ResolvedVc<CodeGens>,
     async_module: ResolvedVc<OptionAsyncModule>,
     generate_source_map: bool,
@@ -878,8 +875,8 @@ impl EcmascriptModuleContentOptions {
             module,
             chunking_context,
             references,
-            esm_references,
             part_references,
+            esm_references,
             code_generation,
             async_module,
             exports,
@@ -918,14 +915,14 @@ impl EcmascriptModuleContentOptions {
                 },
             ];
 
-            let esm_code_gens = esm_references
-                .await?
+            let part_code_gens = part_references
                 .iter()
                 .map(|r| r.code_generation(**chunking_context, scope_hoisting_context))
                 .try_join()
                 .await?;
 
-            let part_code_gens = part_references
+            let esm_code_gens = esm_references
+                .await?
                 .iter()
                 .map(|r| r.code_generation(**chunking_context, scope_hoisting_context))
                 .try_join()
@@ -939,9 +936,9 @@ impl EcmascriptModuleContentOptions {
                 .await?;
 
             anyhow::Ok(
-                esm_code_gens
+                part_code_gens
                     .into_iter()
-                    .chain(part_code_gens.into_iter())
+                    .chain(esm_code_gens.into_iter())
                     .chain(additional_code_gens.into_iter().flatten())
                     .chain(code_gens.into_iter())
                     .collect(),
@@ -1174,6 +1171,8 @@ async fn merge_modules(
             (ResolvedVc<Box<dyn EcmascriptChunkPlaceable>>, SyntaxContext),
             SyntaxContext,
         >,
+
+        error: anyhow::Result<()>,
     }
 
     impl<'a> SetSyntaxContextVisitor<'a> {
@@ -1253,12 +1252,20 @@ async fn merge_modules(
                 self.modules_header_width,
                 self.current_module_idx,
                 span.lo,
-            );
+            )
+            .unwrap_or_else(|err| {
+                self.error = Err(err);
+                span.lo
+            });
             span.hi = CodeGenResultComments::encode_bytepos(
                 self.modules_header_width,
                 self.current_module_idx,
                 span.hi,
-            );
+            )
+            .unwrap_or_else(|err| {
+                self.error = Err(err);
+                span.hi
+            });
         }
     }
 
@@ -1283,7 +1290,7 @@ async fn merge_modules(
         })
         .collect::<Result<FxHashMap<_, _>>>()?;
 
-    let (merged_ast, inserted) = GLOBALS.set(globals_merged, || {
+    let result = GLOBALS.set(globals_merged, || {
         let _ = tracing::trace_span!("merge inner").entered();
         // As an optimization, assume an average number of 5 contexts per module.
         let mut unique_contexts_cache =
@@ -1302,7 +1309,7 @@ async fn merge_modules(
                 {
                     let modules_header_width = module_count.next_power_of_two().trailing_zeros();
                     GLOBALS.set(globals_merged, || {
-                        program.visit_mut_with(&mut SetSyntaxContextVisitor {
+                        let mut visitor = SetSyntaxContextVisitor {
                             modules_header_width,
                             current_module: *module,
                             current_module_idx: current_module_idx as u32,
@@ -1312,8 +1319,10 @@ async fn merge_modules(
                                 .collect(),
                             export_contexts: &export_contexts,
                             unique_contexts_cache: &mut unique_contexts_cache,
-                        });
-                        anyhow::Ok(())
+                            error: Ok(()),
+                        };
+                        program.visit_mut_with(&mut visitor);
+                        visitor.error
                     })?;
 
                     Ok(match program.take() {
@@ -1340,10 +1349,13 @@ async fn merge_modules(
         // ith-module.
         let mut queue = entry_points
             .iter()
-            .map(|(_, i)| prepare_module(contents.len(), *i, &contents[*i], &mut programs[*i]))
+            .map(|&(_, i)| {
+                prepare_module(contents.len(), i, &contents[i], &mut programs[i])
+                    .map_err(|err| (i, err))
+            })
             .flatten_ok()
             .rev()
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
         let mut result = vec![];
         while let Some(item) = queue.pop() {
             if let ModuleItem::Stmt(stmt) = &item {
@@ -1367,7 +1379,8 @@ async fn merge_modules(
                                         index,
                                         &contents[index],
                                         &mut programs[index],
-                                    )?
+                                    )
+                                    .map_err(|err| (index, err))?
                                     .into_iter()
                                     .rev(),
                                 );
@@ -1424,8 +1437,18 @@ async fn merge_modules(
         merged_ast.visit_mut_with(&mut swc_core::ecma::transforms::base::hygiene::hygiene());
         drop(span);
 
-        anyhow::Ok((merged_ast, inserted))
-    })?;
+        Ok((merged_ast, inserted))
+    });
+
+    let (merged_ast, inserted) = match result {
+        Ok(v) => v,
+        Err((content_idx, err)) => {
+            return Err(err.context(format!(
+                "Processing {}",
+                contents[content_idx].0.ident().to_string().await?
+            )));
+        }
+    };
 
     debug_assert!(
         inserted.len() == contents.len(),
@@ -1806,7 +1829,7 @@ async fn process_parse_result(
                 }
                 ParseResult::NotFound => {
                     let path = ident.path().to_string().await?;
-                    let msg = format!("Could not parse module '{path}'");
+                    let msg = format!("Could not parse module '{path}', file not found");
                     let body = vec![
                         quote!(
                             "const e = new Error($msg);" as Stmt,
@@ -1995,6 +2018,8 @@ fn process_content_with_code_gens(
     let mut root_visitors = Vec::new();
     let mut early_hoisted_stmts = FxIndexMap::default();
     let mut hoisted_stmts = FxIndexMap::default();
+    let mut early_late_stmts = FxIndexMap::default();
+    let mut late_stmts = FxIndexMap::default();
     for code_gen in code_gens {
         for CodeGenerationHoistedStmt { key, stmt } in code_gen.hoisted_stmts.drain(..) {
             hoisted_stmts.entry(key).or_insert(stmt);
@@ -2002,7 +2027,12 @@ fn process_content_with_code_gens(
         for CodeGenerationHoistedStmt { key, stmt } in code_gen.early_hoisted_stmts.drain(..) {
             early_hoisted_stmts.insert(key.clone(), stmt);
         }
-
+        for CodeGenerationHoistedStmt { key, stmt } in code_gen.late_stmts.drain(..) {
+            late_stmts.insert(key.clone(), stmt);
+        }
+        for CodeGenerationHoistedStmt { key, stmt } in code_gen.early_late_stmts.drain(..) {
+            early_late_stmts.insert(key.clone(), stmt);
+        }
         for (path, visitor) in &code_gen.visitors {
             if path.is_empty() {
                 root_visitors.push(&**visitor);
@@ -2033,6 +2063,12 @@ fn process_content_with_code_gens(
                     .chain(hoisted_stmts.into_values())
                     .map(ModuleItem::Stmt),
             );
+            body.extend(
+                early_late_stmts
+                    .into_values()
+                    .chain(late_stmts.into_values())
+                    .map(ModuleItem::Stmt),
+            );
         }
         Program::Script(Script { body, .. }) => {
             body.splice(
@@ -2040,6 +2076,11 @@ fn process_content_with_code_gens(
                 early_hoisted_stmts
                     .into_values()
                     .chain(hoisted_stmts.into_values()),
+            );
+            body.extend(
+                early_late_stmts
+                    .into_values()
+                    .chain(late_stmts.into_values()),
             );
         }
     };
@@ -2062,6 +2103,8 @@ fn hygiene_rename_only(
     }
     // Copied from `hygiene_with_config`'s HygieneRenamer, but added an `preserved_exports`
     impl swc_core::ecma::transforms::base::rename::Renamer for HygieneRenamer<'_> {
+        type Target = Id;
+
         const MANGLE: bool = false;
         const RESET_N: bool = true;
 
@@ -2079,7 +2122,7 @@ fn hygiene_rename_only(
             self.preserved_exports.contains(orig) || orig.1.has_mark(self.is_import_mark)
         }
     }
-    swc_core::ecma::transforms::base::rename::renamer(
+    swc_core::ecma::transforms::base::rename::renamer_keep_contexts(
         swc_core::ecma::transforms::base::hygiene::Config {
             top_level_mark: top_level_mark.unwrap_or_default(),
             ..Default::default()
@@ -2399,10 +2442,10 @@ impl CodeGenResultComments {
         }
     }
 
-    fn encode_bytepos(modules_header_width: u32, module: u32, pos: BytePos) -> BytePos {
+    fn encode_bytepos(modules_header_width: u32, module: u32, pos: BytePos) -> Result<BytePos> {
         if pos.is_dummy() {
             // nothing to encode
-            return pos;
+            return Ok(pos);
         }
 
         // 00010000000000100100011010100101
@@ -2430,14 +2473,17 @@ impl CodeGenResultComments {
         } else if old_high_bits == 0 {
             false
         } else {
-            panic!("The high bits of the position {pos} are not all 0s or 1s: {old_high_bits:b}",);
+            return Err(anyhow!(
+                "The high bits of the position {pos} are not all 0s or 1s. \
+                 modules_header_width={modules_header_width}, module={module}",
+            ));
         };
 
         let pos = pos & !((2u32.pow(header_width) - 1) << pos_width);
         let encoded_high_bits = if high_bits_set { 1 } else { 0 } << pos_width;
         let encoded_module = module << (pos_width + 1);
 
-        BytePos(encoded_module | encoded_high_bits | pos)
+        Ok(BytePos(encoded_module | encoded_high_bits | pos))
     }
 
     fn decode_bytepos(modules_header_width: u32, pos: BytePos) -> (usize, BytePos) {
@@ -2485,9 +2531,11 @@ fn encode_module_into_comment_span(
     mut comment: Comment,
 ) -> Comment {
     comment.span.lo =
-        CodeGenResultComments::encode_bytepos(modules_header_width, module as u32, comment.span.lo);
+        CodeGenResultComments::encode_bytepos(modules_header_width, module as u32, comment.span.lo)
+            .unwrap();
     comment.span.hi =
-        CodeGenResultComments::encode_bytepos(modules_header_width, module as u32, comment.span.hi);
+        CodeGenResultComments::encode_bytepos(modules_header_width, module as u32, comment.span.hi)
+            .unwrap();
     comment
 }
 
@@ -2679,14 +2727,6 @@ fn merge_option_vec<T>(a: Option<Vec<T>>, b: Option<Vec<T>>) -> Option<Vec<T>> {
     }
 }
 
-pub fn register() {
-    turbo_tasks::register();
-    turbo_tasks_fs::register();
-    turbopack_core::register();
-    turbo_esregex::register();
-    include!(concat!(env!("OUT_DIR"), "/register.rs"));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2704,7 +2744,8 @@ mod tests {
         .into_iter()
         .filter(|&m| m < module_count)
         {
-            let encoded = CodeGenResultComments::encode_bytepos(modules_header_width, module, pos);
+            let encoded =
+                CodeGenResultComments::encode_bytepos(modules_header_width, module, pos).unwrap();
             let (decoded_module, decoded_pos) =
                 CodeGenResultComments::decode_bytepos(modules_header_width, encoded);
             assert_eq!(
@@ -2749,7 +2790,8 @@ mod tests {
             (BytePos::DUMMY.0, 0b0001, 4, BytePos::DUMMY.0),
         ] {
             let encoded =
-                CodeGenResultComments::encode_bytepos(modules_header_width, module, BytePos(pos));
+                CodeGenResultComments::encode_bytepos(modules_header_width, module, BytePos(pos))
+                    .unwrap();
             assert_eq!(encoded.0, result);
         }
     }

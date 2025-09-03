@@ -14,7 +14,7 @@ use crate::{
     ident::AssetIdent,
     module::Module,
     module_graph::{
-        ModuleGraph, chunk_group_info::ChunkGroup, export_usage::ModuleExportUsageInfo,
+        ModuleGraph, chunk_group_info::ChunkGroup, export_usage::ModuleExportUsage,
         module_batches::BatchingConfig,
     },
     output::{OutputAsset, OutputAssets},
@@ -57,21 +57,8 @@ impl Default for MinifyType {
     }
 }
 
-#[derive(
-    Debug,
-    Default,
-    TaskInput,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize,
-    TraceRawVcs,
-    DeterministicHash,
-    NonLocalValue,
-)]
+#[turbo_tasks::value(shared)]
+#[derive(Debug, Default, TaskInput, Clone, Copy, Hash, DeterministicHash)]
 pub enum SourceMapsType {
     /// Extracts source maps from input files and writes source maps for output files.
     #[default]
@@ -181,6 +168,7 @@ pub trait ChunkingContext {
         self: Vc<Self>,
         asset: Option<Vc<Box<dyn Asset>>>,
         ident: Vc<AssetIdent>,
+        content_hashing_prefix: Option<RcStr>,
         extension: RcStr,
     ) -> Vc<FileSystemPath>;
 
@@ -231,6 +219,13 @@ pub trait ChunkingContext {
     /// Whether to use `MergeableModule` to merge modules if possible.
     #[turbo_tasks::function]
     fn is_module_merging_enabled(self: Vc<Self>) -> Vc<bool> {
+        Vc::cell(false)
+    }
+
+    /// Whether to include information about the content of the chunk into the runtime, to allow
+    /// more incremental loading of individual chunk items.
+    #[turbo_tasks::function]
+    fn is_dynamic_chunk_content_loading_enabled(self: Vc<Self>) -> Vc<bool> {
         Vc::cell(false)
     }
 
@@ -300,7 +295,7 @@ pub trait ChunkingContext {
     async fn module_export_usage(
         self: Vc<Self>,
         module: Vc<Box<dyn Module>>,
-    ) -> Result<Vc<ModuleExportUsageInfo>>;
+    ) -> Result<Vc<ModuleExportUsage>>;
 }
 
 pub trait ChunkingContextExt {

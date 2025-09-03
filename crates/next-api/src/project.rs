@@ -1,4 +1,4 @@
-use std::{path::MAIN_SEPARATOR, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use indexmap::map::Entry;
@@ -36,10 +36,8 @@ use turbo_tasks::{
     trace::TraceRawVcs,
 };
 use turbo_tasks_env::{EnvMap, ProcessEnv};
-use turbo_tasks_fs::{
-    DiskFileSystem, FileSystem, FileSystemPath, VirtualFileSystem, get_relative_path_to,
-    invalidation,
-};
+use turbo_tasks_fs::{DiskFileSystem, FileSystem, FileSystemPath, VirtualFileSystem, invalidation};
+use turbo_unix_path::{join_path, unix_to_sys};
 use turbopack::{
     ModuleAssetContext, evaluate_context::node_build_environment,
     global_module_ids::get_global_module_id_strategy, transition::TransitionOptions,
@@ -149,11 +147,13 @@ pub struct WatchOptions {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectOptions {
-    /// A root path from which all files must be nested under. Trying to access
-    /// a file outside this root will fail. Think of this as a chroot.
+    /// An absolute root path (Unix or Windows path) from which all files must be nested under.
+    /// Trying to access a file outside this root will fail, so think of this as a chroot.
+    /// E.g. `/home/user/projects/my-repo`.
     pub root_path: RcStr,
 
-    /// A path inside the root_path which contains the app/pages directories.
+    /// A path which contains the app/pages directories, relative to [`Project::root_path`], always
+    /// Unix path. E.g. `apps/my-app`
     pub project_path: RcStr,
 
     /// The contents of next.config.js, serialized to JSON.
@@ -321,14 +321,15 @@ impl ProjectContainer {
                 .await?;
         } else {
             project_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                path: RcStr::from(path),
+                // this path is just used for display purposes
+                path: RcStr::from(path.to_string_lossy()),
             });
         }
         let output_fs = output_fs_operation(project)
             .read_strongly_consistent()
             .await?;
         output_fs.invalidate_with_reason(|path| invalidation::Initialize {
-            path: RcStr::from(path),
+            path: RcStr::from(path.to_string_lossy()),
         });
         Ok(())
     }
@@ -419,13 +420,14 @@ impl ProjectContainer {
                     .await?;
             } else {
                 project_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                    path: RcStr::from(path),
+                    // this path is just used for display purposes
+                    path: RcStr::from(path.to_string_lossy()),
                 });
             }
         }
         if !ReadRef::ptr_eq(&prev_output_fs, &output_fs) {
             prev_output_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                path: RcStr::from(path),
+                path: RcStr::from(path.to_string_lossy()),
             });
         }
 
@@ -538,15 +540,20 @@ impl ProjectContainer {
 
 #[turbo_tasks::value]
 pub struct Project {
-    /// A root path from which all files must be nested under. Trying to access
-    /// a file outside this root will fail. Think of this as a chroot.
+    /// An absolute root path (Windows or Unix path) from which all files must be nested under.
+    /// Trying to access a file outside this root will fail, so think of this as a chroot.
+    /// E.g. `/home/user/projects/my-repo`.
     root_path: RcStr,
 
-    /// A path where to emit the build outputs. next.config.js's distDir.
-    dist_dir: RcStr,
+    /// A path which contains the app/pages directories, relative to [`Project::root_path`], always
+    /// a Unix path.
+    /// E.g. `apps/my-app`
+    project_path: RcStr,
 
-    /// A path inside the root_path which contains the app/pages directories.
-    pub project_path: RcStr,
+    /// A path where to emit the build outputs, relative to [`Project::project_path`], always a
+    /// Unix path. Corresponds to next.config.js's `distDir`.
+    /// E.g. `.next`
+    dist_dir: RcStr,
 
     /// Filesystem watcher options.
     watch: WatchOptions,
@@ -649,7 +656,7 @@ impl Issue for ConflictIssue {
 impl Project {
     #[turbo_tasks::function]
     pub async fn app_project(self: Vc<Self>) -> Result<Vc<OptionAppProject>> {
-        let app_dir = find_app_dir(self.project_path().await?.clone_value()).await?;
+        let app_dir = find_app_dir(self.project_path().owned().await?).await?;
 
         Ok(match &*app_dir {
             Some(app_dir) => Vc::cell(Some(
@@ -666,11 +673,7 @@ impl Project {
 
     #[turbo_tasks::function]
     pub fn project_fs(&self) -> Vc<DiskFileSystem> {
-        DiskFileSystem::new(
-            PROJECT_FILESYSTEM_NAME.into(),
-            self.root_path.clone(),
-            vec![],
-        )
+        DiskFileSystem::new(PROJECT_FILESYSTEM_NAME.into(), self.root_path.clone())
     }
 
     #[turbo_tasks::function]
@@ -681,25 +684,34 @@ impl Project {
 
     #[turbo_tasks::function]
     pub fn output_fs(&self) -> Vc<DiskFileSystem> {
-        DiskFileSystem::new(rcstr!("output"), self.root_path.clone(), vec![])
+        DiskFileSystem::new(rcstr!("output"), self.root_path.clone())
     }
 
     #[turbo_tasks::function]
-    pub fn dist_dir(&self) -> Vc<RcStr> {
-        Vc::cell(self.dist_dir.clone())
+    pub fn dist_dir_absolute(&self) -> Result<Vc<RcStr>> {
+        Ok(Vc::cell(
+            format!(
+                "{}{}{}",
+                self.root_path,
+                std::path::MAIN_SEPARATOR,
+                unix_to_sys(
+                    &join_path(&self.project_path, &self.dist_dir)
+                        .context("expected project_path to be inside of root_path")?
+                )
+            )
+            .into(),
+        ))
     }
 
     #[turbo_tasks::function]
     pub async fn node_root(self: Vc<Self>) -> Result<Vc<FileSystemPath>> {
         let this = self.await?;
-        let relative_from_root_to_project_path =
-            get_relative_path_to(&this.root_path, &this.project_path);
         Ok(self
             .output_fs()
             .root()
             .await?
-            .join(&relative_from_root_to_project_path)?
-            .join(&this.dist_dir.clone())?
+            .join(&this.project_path)?
+            .join(&this.dist_dir)?
             .cell())
     }
 
@@ -726,28 +738,24 @@ impl Project {
             .cell())
     }
 
+    /// Returns the relative path from the node root to the output root.
+    /// E.g. from `[project]/test/e2e/app-dir/non-root-project-monorepo/apps/web/app/
+    /// import-meta-url-ssr/page.tsx` to `[project]/`.
     #[turbo_tasks::function]
     pub async fn node_root_to_root_path(self: Vc<Self>) -> Result<Vc<RcStr>> {
-        let this = self.await?;
-        let output_root_to_root_path = self
-            .project_path()
-            .await?
-            .join(&this.dist_dir.clone())?
-            .get_relative_path_to(&*self.project_root_path().await?)
-            .context("Project path need to be in root path")?;
-        Ok(Vc::cell(output_root_to_root_path))
+        Ok(Vc::cell(
+            self.node_root()
+                .await?
+                .get_relative_path_to(&*self.output_fs().root().await?)
+                .context("Expected node root to be inside of output fs")?,
+        ))
     }
 
     #[turbo_tasks::function]
     pub async fn project_path(self: Vc<Self>) -> Result<Vc<FileSystemPath>> {
         let this = self.await?;
         let root = self.project_root_path().await?;
-        let project_relative = this.project_path.strip_prefix(&*this.root_path).unwrap();
-        let project_relative = project_relative
-            .strip_prefix(MAIN_SEPARATOR)
-            .unwrap_or(project_relative)
-            .replace(MAIN_SEPARATOR, "/");
-        Ok(root.join(&project_relative)?.cell())
+        Ok(root.join(&this.project_path)?.cell())
     }
 
     #[turbo_tasks::function]
@@ -804,12 +812,12 @@ impl Project {
 
     #[turbo_tasks::function]
     pub(super) async fn execution_context(self: Vc<Self>) -> Result<Vc<ExecutionContext>> {
-        let node_root = self.node_root().await?.clone_value();
+        let node_root = self.node_root().owned().await?;
         let next_mode = self.next_mode().await?;
 
         let node_execution_chunking_context = Vc::upcast(
             NodeJsChunkingContext::builder(
-                self.project_root_path().await?.clone_value(),
+                self.project_root_path().owned().await?,
                 node_root.clone(),
                 self.node_root_to_root_path().owned().await?,
                 node_root.clone(),
@@ -827,7 +835,7 @@ impl Project {
         );
 
         Ok(ExecutionContext::new(
-            self.project_path().await?.clone_value(),
+            self.project_path().owned().await?,
             node_execution_chunking_context,
             self.env(),
         ))
@@ -961,18 +969,6 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub async fn module_graph_for_entries(
-        self: Vc<Self>,
-        entries: Vc<GraphEntries>,
-    ) -> Result<Vc<ModuleGraph>> {
-        Ok(if *self.per_page_module_graph().await? {
-            ModuleGraph::from_modules(entries, self.next_mode().await?.is_production())
-        } else {
-            *self.whole_app_module_graphs().await?.full
-        })
-    }
-
-    #[turbo_tasks::function]
     pub async fn whole_app_module_graphs(self: ResolvedVc<Self>) -> Result<Vc<ModuleGraphs>> {
         async move {
             let module_graphs_op = whole_app_module_graph_operation(self);
@@ -1001,6 +997,7 @@ impl Project {
             format!("/ROOT/{}", self.project_path().await?.path).into(),
             this.define_env.nodejs(),
             self.current_node_js_version(),
+            this.browserslist_query.clone(),
         ))
     }
 
@@ -1008,9 +1005,10 @@ impl Project {
     pub(super) async fn edge_compile_time_info(self: Vc<Self>) -> Result<Vc<CompileTimeInfo>> {
         let this = self.await?;
         Ok(get_edge_compile_time_info(
-            self.project_path().await?.clone_value(),
+            self.project_path().owned().await?,
             this.define_env.edge(),
             self.current_node_js_version(),
+            this.browserslist_query.clone(),
         ))
     }
 
@@ -1032,8 +1030,8 @@ impl Project {
     ) -> Result<Vc<Box<dyn ChunkingContext>>> {
         Ok(get_client_chunking_context(ClientChunkingContextOptions {
             mode: self.next_mode(),
-            root_path: self.project_root_path().await?.clone_value(),
-            client_root: self.client_relative_path().await?.clone_value(),
+            root_path: self.project_root_path().owned().await?,
+            client_root: self.client_relative_path().owned().await?,
             client_root_to_root_path: rcstr!("/ROOT"),
             asset_prefix: self.next_config().computed_asset_prefix(),
             chunk_suffix_path: self.next_config().chunk_suffix_path(),
@@ -1054,8 +1052,8 @@ impl Project {
     ) -> Result<Vc<NodeJsChunkingContext>> {
         let options = ServerChunkingContextOptions {
             mode: self.next_mode(),
-            root_path: self.project_root_path().await?.clone_value(),
-            node_root: self.node_root().await?.clone_value(),
+            root_path: self.project_root_path().owned().await?,
+            node_root: self.node_root().owned().await?,
             node_root_to_root_path: self.node_root_to_root_path().owned().await?,
             environment: self.server_compile_time_info().environment(),
             module_id_strategy: self.module_ids(),
@@ -1068,7 +1066,7 @@ impl Project {
         Ok(if client_assets {
             get_server_chunking_context_with_client_assets(
                 options,
-                self.client_relative_path().await?.clone_value(),
+                self.client_relative_path().owned().await?,
                 self.next_config().computed_asset_prefix().owned().await?,
             )
         } else {
@@ -1083,8 +1081,8 @@ impl Project {
     ) -> Result<Vc<Box<dyn ChunkingContext>>> {
         let options = EdgeChunkingContextOptions {
             mode: self.next_mode(),
-            root_path: self.project_root_path().await?.clone_value(),
-            node_root: self.node_root().await?.clone_value(),
+            root_path: self.project_root_path().owned().await?,
+            node_root: self.node_root().owned().await?,
             output_root_to_root_path: self.node_root_to_root_path(),
             environment: self.edge_compile_time_info().environment(),
             module_id_strategy: self.module_ids(),
@@ -1097,7 +1095,7 @@ impl Project {
         Ok(if client_assets {
             get_edge_chunking_context_with_client_assets(
                 options,
-                self.client_relative_path().await?.clone_value(),
+                self.client_relative_path().owned().await?,
                 self.next_config().computed_asset_prefix(),
             )
         } else {
@@ -1221,7 +1219,7 @@ impl Project {
             match routes.entry(pathname.clone()) {
                 Entry::Occupied(mut entry) => {
                     ConflictIssue {
-                        path: self.project_path().await?.clone_value(),
+                        path: self.project_path().owned().await?,
                         title: StyledString::Text(
                             format!("App Router and Pages Router both match path: {pathname}")
                                 .into(),
@@ -1288,7 +1286,9 @@ impl Project {
     async fn edge_middleware_context(self: Vc<Self>) -> Result<Vc<Box<dyn AssetContext>>> {
         let mut transitions = vec![];
 
-        let app_dir = (*find_app_dir(self.project_path().await?.clone_value()).await?).clone();
+        let app_dir = find_app_dir(self.project_path().owned().await?)
+            .owned()
+            .await?;
         let app_project = *self.app_project().await?;
 
         let ecmascript_client_reference_transition_name =
@@ -1312,7 +1312,7 @@ impl Project {
             .cell(),
             self.edge_compile_time_info(),
             get_server_module_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 self.execution_context(),
                 ServerContextType::Middleware {
                     app_dir: app_dir.clone(),
@@ -1326,7 +1326,7 @@ impl Project {
                 self.edge_compile_time_info().environment(),
             ),
             get_edge_resolve_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 ServerContextType::Middleware {
                     app_dir: app_dir.clone(),
                     ecmascript_client_reference_transition_name:
@@ -1335,6 +1335,7 @@ impl Project {
                 self.next_mode(),
                 self.next_config(),
                 self.execution_context(),
+                None, // root params can't be used in middleware
             ),
             Layer::new_with_user_friendly_name(
                 rcstr!("middleware-edge"),
@@ -1347,7 +1348,9 @@ impl Project {
     async fn node_middleware_context(self: Vc<Self>) -> Result<Vc<Box<dyn AssetContext>>> {
         let mut transitions = vec![];
 
-        let app_dir = (*find_app_dir(self.project_path().await?.clone_value()).await?).clone();
+        let app_dir = find_app_dir(self.project_path().owned().await?)
+            .owned()
+            .await?;
         let app_project = *self.app_project().await?;
 
         let ecmascript_client_reference_transition_name =
@@ -1371,7 +1374,7 @@ impl Project {
             .cell(),
             self.server_compile_time_info(),
             get_server_module_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 self.execution_context(),
                 ServerContextType::Middleware {
                     app_dir: app_dir.clone(),
@@ -1385,7 +1388,7 @@ impl Project {
                 self.server_compile_time_info().environment(),
             ),
             get_server_resolve_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 ServerContextType::Middleware {
                     app_dir: app_dir.clone(),
                     ecmascript_client_reference_transition_name,
@@ -1393,6 +1396,7 @@ impl Project {
                 self.next_mode(),
                 self.next_config(),
                 self.execution_context(),
+                None, // root params can't be used in middleware
             ),
             Layer::new_with_user_friendly_name(rcstr!("middleware"), rcstr!("Middleware")),
         )))
@@ -1427,7 +1431,7 @@ impl Project {
     #[turbo_tasks::function]
     async fn find_middleware(self: Vc<Self>) -> Result<Vc<FindContextFileResult>> {
         Ok(find_context_file(
-            self.project_path().await?.clone_value(),
+            self.project_path().owned().await?,
             middleware_files(self.next_config().page_extensions()),
         ))
     }
@@ -1439,7 +1443,9 @@ impl Project {
             return Ok(Vc::upcast(EmptyEndpoint::new()));
         };
         let source = Vc::upcast(FileSource::new(fs_path.clone()));
-        let app_dir = (*find_app_dir(self.project_path().await?.clone_value()).await?).clone();
+        let app_dir = find_app_dir(self.project_path().owned().await?)
+            .owned()
+            .await?;
         let ecmascript_client_reference_transition_name = (*self.app_project().await?)
             .as_ref()
             .map(|_| AppProject::client_transition_name());
@@ -1459,7 +1465,9 @@ impl Project {
     async fn node_instrumentation_context(self: Vc<Self>) -> Result<Vc<Box<dyn AssetContext>>> {
         let mut transitions = vec![];
 
-        let app_dir = (*find_app_dir(self.project_path().await?.clone_value()).await?).clone();
+        let app_dir = find_app_dir(self.project_path().owned().await?)
+            .owned()
+            .await?;
         let app_project = &*self.app_project().await?;
 
         let ecmascript_client_reference_transition_name = app_project
@@ -1484,7 +1492,7 @@ impl Project {
             .cell(),
             self.server_compile_time_info(),
             get_server_module_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 self.execution_context(),
                 ServerContextType::Instrumentation {
                     app_dir: app_dir.clone(),
@@ -1498,7 +1506,7 @@ impl Project {
                 self.server_compile_time_info().environment(),
             ),
             get_server_resolve_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 ServerContextType::Instrumentation {
                     app_dir: app_dir.clone(),
                     ecmascript_client_reference_transition_name,
@@ -1506,6 +1514,7 @@ impl Project {
                 self.next_mode(),
                 self.next_config(),
                 self.execution_context(),
+                None, // root params can't be used in instrumentation
             ),
             Layer::new_with_user_friendly_name(
                 rcstr!("instrumentation"),
@@ -1518,7 +1527,9 @@ impl Project {
     async fn edge_instrumentation_context(self: Vc<Self>) -> Result<Vc<Box<dyn AssetContext>>> {
         let mut transitions = vec![];
 
-        let app_dir = (*find_app_dir(self.project_path().await?.clone_value()).await?).clone();
+        let app_dir = find_app_dir(self.project_path().owned().await?)
+            .owned()
+            .await?;
         let app_project = &*self.app_project().await?;
 
         let ecmascript_client_reference_transition_name = app_project
@@ -1543,7 +1554,7 @@ impl Project {
             .cell(),
             self.edge_compile_time_info(),
             get_server_module_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 self.execution_context(),
                 ServerContextType::Instrumentation {
                     app_dir: app_dir.clone(),
@@ -1557,7 +1568,7 @@ impl Project {
                 self.edge_compile_time_info().environment(),
             ),
             get_edge_resolve_options_context(
-                self.project_path().await?.clone_value(),
+                self.project_path().owned().await?,
                 ServerContextType::Instrumentation {
                     app_dir: app_dir.clone(),
                     ecmascript_client_reference_transition_name,
@@ -1565,6 +1576,7 @@ impl Project {
                 self.next_mode(),
                 self.next_config(),
                 self.execution_context(),
+                None, // root params can't be used in instrumentation
             ),
             Layer::new_with_user_friendly_name(
                 rcstr!("instrumentation-edge"),
@@ -1576,7 +1588,7 @@ impl Project {
     #[turbo_tasks::function]
     async fn find_instrumentation(self: Vc<Self>) -> Result<Vc<FindContextFileResult>> {
         Ok(find_context_file(
-            self.project_path().await?.clone_value(),
+            self.project_path().owned().await?,
             instrumentation_files(self.next_config().page_extensions()),
         ))
     }
@@ -1591,7 +1603,9 @@ impl Project {
             return Ok(Vc::upcast(EmptyEndpoint::new()));
         };
         let source = Vc::upcast(FileSource::new(fs_path.clone()));
-        let app_dir = (*find_app_dir(self.project_path().await?.clone_value()).await?).clone();
+        let app_dir = find_app_dir(self.project_path().owned().await?)
+            .owned()
+            .await?;
         let ecmascript_client_reference_transition_name = (*self.app_project().await?)
             .as_ref()
             .map(|_| AppProject::client_transition_name());
@@ -1621,29 +1635,28 @@ impl Project {
         async move {
             let all_output_assets = all_assets_from_entries_operation(output_assets);
 
-            let client_relative_path = self.client_relative_path().await?.clone_value();
-            let node_root = self.node_root().await?.clone_value();
+            let client_relative_path = self.client_relative_path().owned().await?;
+            let node_root = self.node_root().owned().await?;
 
             if let Some(map) = self.await?.versioned_content_map {
-                let _ = map
-                    .insert_output_assets(
-                        all_output_assets,
-                        node_root.clone(),
-                        client_relative_path.clone(),
-                        node_root.clone(),
-                    )
-                    .resolve()
-                    .await?;
+                map.insert_output_assets(
+                    all_output_assets,
+                    node_root.clone(),
+                    client_relative_path.clone(),
+                    node_root.clone(),
+                )
+                .as_side_effect()
+                .await?;
 
                 Ok(())
             } else {
-                let _ = emit_assets(
+                emit_assets(
                     all_output_assets.connect(),
                     node_root.clone(),
                     client_relative_path.clone(),
                     node_root.clone(),
                 )
-                .resolve()
+                .as_side_effect()
                 .await?;
 
                 Ok(())
@@ -1723,7 +1736,7 @@ impl Project {
     #[turbo_tasks::function]
     pub async fn hmr_identifiers(self: Vc<Self>) -> Result<Vc<Vec<RcStr>>> {
         if let Some(map) = self.await?.versioned_content_map {
-            Ok(map.keys_in_path(self.client_relative_path().await?.clone_value()))
+            Ok(map.keys_in_path(self.client_relative_path().owned().await?))
         } else {
             bail!("must be in dev mode to hmr")
         }
@@ -1733,7 +1746,7 @@ impl Project {
     /// referenced from the roots
     #[turbo_tasks::function]
     pub async fn server_changed(self: Vc<Self>, roots: Vc<OutputAssets>) -> Result<Vc<Completion>> {
-        let path = self.node_root().await?.clone_value();
+        let path = self.node_root().owned().await?;
         Ok(any_output_changed(roots, path, true))
     }
 
@@ -1741,7 +1754,7 @@ impl Project {
     /// referenced from the roots
     #[turbo_tasks::function]
     pub async fn client_changed(self: Vc<Self>, roots: Vc<OutputAssets>) -> Result<Vc<Completion>> {
-        let path = self.client_root().await?.clone_value();
+        let path = self.client_root().owned().await?;
         Ok(any_output_changed(roots, path, false))
     }
 

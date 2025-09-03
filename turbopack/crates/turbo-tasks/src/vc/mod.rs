@@ -357,7 +357,7 @@ where
     T: ?Sized,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Vc").field("node", &self.node).finish()
+        f.debug_tuple("Vc").field(&self.node).finish()
     }
 }
 
@@ -419,6 +419,13 @@ where
             node: vc.node,
             _t: PhantomData,
         }
+    }
+
+    /// Runs the operation, but ignores the returned Vc. Use that when only interested in running
+    /// the task for side effects.
+    pub async fn as_side_effect(self) -> Result<()> {
+        self.node.resolve().await?;
+        Ok(())
     }
 
     /// Do not use this: Use [`Vc::to_resolved`] instead. If you must have a resolved [`Vc`] type

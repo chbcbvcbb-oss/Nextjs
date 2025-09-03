@@ -4832,6 +4832,9 @@
         ((ReactSharedInternals.recentlyCreatedOwnerStacks = 0),
         (lastResetTime = now));
     }
+    function isEligibleForOutlining(request, boundary) {
+      return 500 < boundary.byteSize && null === boundary.contentPreamble;
+    }
     function defaultErrorHandler(error) {
       if (
         "object" === typeof error &&
@@ -4852,7 +4855,7 @@
           : error.splice(
               0,
               0,
-              "\u001b[0m\u001b[7m%c%s\u001b[0m%c ",
+              "\u001b[0m\u001b[7m%c%s\u001b[0m%c",
               "background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px",
               " " + JSCompiler_inline_result + " ",
               ""
@@ -5026,8 +5029,7 @@
       renderState.nextSegmentId = postponedState.nextSegmentId;
       if ("number" === typeof postponedState.replaySlots)
         return (
-          (onError = postponedState.replaySlots),
-          (onAllReady = createPendingSegment(
+          (onError = createPendingSegment(
             renderState,
             0,
             null,
@@ -5035,15 +5037,14 @@
             !1,
             !1
           )),
-          (onAllReady.id = onError),
-          (onAllReady.parentFlushed = !0),
+          (onError.parentFlushed = !0),
           (children = createRenderTask(
             renderState,
             null,
             children,
             -1,
             null,
-            onAllReady,
+            onError,
             null,
             null,
             renderState.abortableTasks,
@@ -5345,14 +5346,16 @@
           if ("number" === typeof info.time) break;
           if (null != info.awaited) {
             var bestStack = null == info.debugStack ? info.awaited : info;
-            void 0 !== bestStack.debugStack &&
-              ((task.componentStack = {
+            if (void 0 !== bestStack.debugStack) {
+              task.componentStack = {
                 parent: task.componentStack,
                 type: info,
                 owner: bestStack.owner,
                 stack: bestStack.debugStack
-              }),
-              (task.debugTask = bestStack.debugTask));
+              };
+              task.debugTask = bestStack.debugTask;
+              break;
+            }
           }
         }
     }
@@ -5395,6 +5398,18 @@
             "function" === typeof node.then &&
               pushServerComponentStack(task, node._debugInfo);
         }
+    }
+    function replaceSuspenseComponentStackWithSuspenseFallbackStack(
+      componentStack
+    ) {
+      return null === componentStack
+        ? null
+        : {
+            parent: componentStack.parent,
+            type: "Suspense Fallback",
+            owner: componentStack.owner,
+            stack: componentStack.stack
+          };
     }
     function getThrownInfo(node$jscomp$0) {
       var errorInfo = {};
@@ -5520,7 +5535,7 @@
           if (
             1 !== rowBoundary.pendingTasks ||
             rowBoundary.parentFlushed ||
-            500 < rowBoundary.byteSize
+            isEligibleForOutlining(request, rowBoundary)
           ) {
             allCompleteAndInlinable = !1;
             break;
@@ -6224,27 +6239,18 @@
               !1
             );
             segment.preambleChildren.push(preambleSegment);
-            var preambleTask = createRenderTask(
-              request,
-              null,
-              _children,
-              -1,
-              task.blockedBoundary,
-              preambleSegment,
-              task.blockedPreamble,
-              task.hoistableState,
-              request.abortableTasks,
-              task.keyPath,
-              task.formatContext,
-              task.context,
-              task.treeContext,
-              task.row,
-              task.componentStack,
-              emptyContextObject,
-              task.debugTask
-            );
-            pushComponentStack(preambleTask);
-            request.pingedTasks.push(preambleTask);
+            task.blockedSegment = preambleSegment;
+            try {
+              (preambleSegment.status = 6),
+                renderNode(request, task, _children, -1),
+                preambleSegment.lastPushedText &&
+                  preambleSegment.textEmbedded &&
+                  preambleSegment.chunks.push(textSeparator),
+                (preambleSegment.status = COMPLETED),
+                finishedSegment(request, task.blockedBoundary, preambleSegment);
+            } finally {
+              task.blockedSegment = segment;
+            }
           } else renderNode(request, task, _children, -1);
           task.formatContext = _prevContext2;
           task.keyPath = _prevKeyPath3;
@@ -6579,7 +6585,8 @@
               );
               contentRootSegment.parentFlushed = !0;
               if (null !== request.trackedPostpones) {
-                var fallbackKeyPath = [
+                var suspenseComponentStack = task.componentStack,
+                  fallbackKeyPath = [
                     keyPath[0],
                     "Suspense Fallback",
                     keyPath[2]
@@ -6602,6 +6609,10 @@
                   request.resumableState,
                   prevContext$jscomp$1
                 );
+                task.componentStack =
+                  replaceSuspenseComponentStackWithSuspenseFallbackStack(
+                    suspenseComponentStack
+                  );
                 boundarySegment.status = 6;
                 try {
                   renderNode(request, task, fallback, -1),
@@ -6640,7 +6651,7 @@
                   task.context,
                   task.treeContext,
                   null,
-                  task.componentStack,
+                  suspenseComponentStack,
                   emptyContextObject,
                   task.debugTask
                 );
@@ -6672,7 +6683,7 @@
                   ) {
                     if (
                       ((newBoundary.status = COMPLETED),
-                      !(500 < newBoundary.byteSize))
+                      !isEligibleForOutlining(request, newBoundary))
                     ) {
                       null !== prevRow$jscomp$0 &&
                         0 === --prevRow$jscomp$0.pendingTasks &&
@@ -6749,7 +6760,9 @@
                   task.context,
                   task.treeContext,
                   task.row,
-                  task.componentStack,
+                  replaceSuspenseComponentStackWithSuspenseFallbackStack(
+                    task.componentStack
+                  ),
                   emptyContextObject,
                   task.debugTask
                 );
@@ -7079,7 +7092,9 @@
                 task.context,
                 task.treeContext,
                 task.row,
-                task.componentStack,
+                replaceSuspenseComponentStackWithSuspenseFallbackStack(
+                  task.componentStack
+                ),
                 emptyContextObject,
                 task.debugTask
               );
@@ -7649,10 +7664,13 @@
               thrownValue === SuspenseException
                 ? getSuspendedThenable()
                 : thrownValue),
-            "object" === typeof node && null !== node)
+            12 !== request.status && "object" === typeof node && null !== node)
           ) {
             if ("function" === typeof node.then) {
-              childIndex = getThenableStateAfterSuspending();
+              childIndex =
+                thrownValue === SuspenseException
+                  ? getThenableStateAfterSuspending()
+                  : null;
               request = spawnNewSuspendedReplayTask(
                 request,
                 task,
@@ -7670,7 +7688,10 @@
               return;
             }
             if ("Maximum call stack size exceeded" === node.message) {
-              node = getThenableStateAfterSuspending();
+              node =
+                thrownValue === SuspenseException
+                  ? getThenableStateAfterSuspending()
+                  : null;
               node = spawnNewSuspendedReplayTask(request, task, node);
               request.pingedTasks.push(node);
               task.formatContext = previousFormatContext;
@@ -7699,11 +7720,14 @@
               thrownValue$3 === SuspenseException
                 ? getSuspendedThenable()
                 : thrownValue$3),
-            "object" === typeof node && null !== node)
+            12 !== request.status && "object" === typeof node && null !== node)
           ) {
             if ("function" === typeof node.then) {
               segment = node;
-              node = getThenableStateAfterSuspending();
+              node =
+                thrownValue$3 === SuspenseException
+                  ? getThenableStateAfterSuspending()
+                  : null;
               request = spawnNewSuspendedRenderTask(request, task, node).ping;
               segment.then(request, request);
               task.formatContext = previousFormatContext;
@@ -7745,7 +7769,10 @@
               return;
             }
             if ("Maximum call stack size exceeded" === node.message) {
-              segment = getThenableStateAfterSuspending();
+              segment =
+                thrownValue$3 === SuspenseException
+                  ? getThenableStateAfterSuspending()
+                  : null;
               segment = spawnNewSuspendedRenderTask(request, task, segment);
               request.pingedTasks.push(segment);
               task.formatContext = previousFormatContext;
@@ -8173,7 +8200,7 @@
             (row = boundary.row),
               null !== row &&
                 hoistHoistables(row.hoistables, boundary.contentState),
-              500 < boundary.byteSize ||
+              isEligibleForOutlining(request, boundary) ||
                 (boundary.fallbackAbortableTasks.forEach(
                   abortTaskSoft,
                   request
@@ -8295,7 +8322,10 @@
                   ) {
                     var ping = request.ping;
                     x.then(ping, ping);
-                    request.thenableState = getThenableStateAfterSuspending();
+                    request.thenableState =
+                      thrownValue === SuspenseException
+                        ? getThenableStateAfterSuspending()
+                        : null;
                   } else {
                     request.replay.pendingTasks--;
                     request.abortSet.delete(request);
@@ -8406,7 +8436,9 @@
                         if ("function" === typeof x$jscomp$0.then) {
                           segment$jscomp$0.status = PENDING;
                           task$jscomp$0.thenableState =
-                            getThenableStateAfterSuspending();
+                            thrownValue === SuspenseException
+                              ? getThenableStateAfterSuspending()
+                              : null;
                           var ping$jscomp$0 = task$jscomp$0.ping;
                           x$jscomp$0.then(ping$jscomp$0, ping$jscomp$0);
                           break a;
@@ -8562,6 +8594,7 @@
       switch (boundary.status) {
         case COMPLETED:
           hoistPreambleState(request.renderState, preamble);
+          request.byteSize += boundary.byteSize;
           segment = boundary.completedSegments[0];
           if (!segment)
             throw Error(
@@ -8594,17 +8627,17 @@
         null === request.completedPreambleSegments
       ) {
         var collectedPreambleSegments = [],
+          originalRequestByteSize = request.byteSize,
           hasPendingPreambles = preparePreambleFromSegment(
             request,
             request.completedRootSegment,
             collectedPreambleSegments
           ),
           preamble = request.renderState.preamble;
-        if (
-          !1 === hasPendingPreambles ||
-          (preamble.headChunks && preamble.bodyChunks)
-        )
-          request.completedPreambleSegments = collectedPreambleSegments;
+        !1 === hasPendingPreambles ||
+        (preamble.headChunks && preamble.bodyChunks)
+          ? (request.completedPreambleSegments = collectedPreambleSegments)
+          : (request.byteSize = originalRequestByteSize);
       }
     }
     function flushSubtree(request, destination, segment, hoistableState) {
@@ -8717,7 +8750,7 @@
             hoistHoistables(hoistableState, boundary.fallbackState),
           flushSubtree(request, destination, segment, hoistableState);
       else if (
-        500 < boundary.byteSize &&
+        isEligibleForOutlining(request, boundary) &&
         flushedByteSize + boundary.byteSize > request.progressiveChunkSize
       )
         (boundary.rootSegmentID = request.nextSegmentId++),
@@ -8734,7 +8767,7 @@
           hoistHoistables(hoistableState, boundary.contentState);
         segment = boundary.row;
         null !== segment &&
-          500 < boundary.byteSize &&
+          isEligibleForOutlining(request, boundary) &&
           0 === --segment.pendingTasks &&
           finishSuspenseListRow(request, segment);
         writeChunkAndReturn(destination, startCompletedSuspenseBoundary);
@@ -8778,7 +8811,7 @@
       completedSegments.length = 0;
       completedSegments = boundary.row;
       null !== completedSegments &&
-        500 < boundary.byteSize &&
+        isEligibleForOutlining(request, boundary) &&
         0 === --completedSegments.pendingTasks &&
         finishSuspenseListRow(request, completedSegments);
       writeHoistablesForBoundary(
@@ -9473,13 +9506,15 @@
         (request.completedRootSegment.status !== POSTPONED &&
           null !== request.completedPreambleSegments)
       ) {
+        var nextSegmentId = request.nextSegmentId;
         var replaySlots = trackedPostpones.rootSlots;
         var resumableState = request.resumableState;
         resumableState.bootstrapScriptContent = void 0;
         resumableState.bootstrapScripts = void 0;
         resumableState.bootstrapModules = void 0;
       } else {
-        replaySlots = request.completedRootSegment.id;
+        nextSegmentId = 0;
+        replaySlots = -1;
         resumableState = request.resumableState;
         var renderState = request.renderState;
         resumableState.nextFormID = 0;
@@ -9496,7 +9531,7 @@
         resumableState.instructions = NothingSent;
       }
       return {
-        nextSegmentId: request.nextSegmentId,
+        nextSegmentId: nextSegmentId,
         rootFormatContext: request.rootFormatContext,
         progressiveChunkSize: request.progressiveChunkSize,
         resumableState: request.resumableState,
@@ -9506,11 +9541,11 @@
     }
     function ensureCorrectIsomorphicReactVersion() {
       var isomorphicReactPackageVersion = React.version;
-      if ("19.2.0-experimental-73aa744b-20250702" !== isomorphicReactPackageVersion)
+      if ("19.2.0-experimental-2805f0ed-20250903" !== isomorphicReactPackageVersion)
         throw Error(
           'Incompatible React versions: The "react" and "react-dom" packages must have the exact same version. Instead got:\n  - react:      ' +
             (isomorphicReactPackageVersion +
-              "\n  - react-dom:  19.2.0-experimental-73aa744b-20250702\nLearn more: https://react.dev/warnings/version-mismatch")
+              "\n  - react-dom:  19.2.0-experimental-2805f0ed-20250903\nLearn more: https://react.dev/warnings/version-mismatch")
         );
     }
     var React = require("next/dist/compiled/react-experimental"),
@@ -9701,7 +9736,11 @@
         "aria-rowcount": 0,
         "aria-rowindex": 0,
         "aria-rowspan": 0,
-        "aria-setsize": 0
+        "aria-setsize": 0,
+        "aria-braillelabel": 0,
+        "aria-brailleroledescription": 0,
+        "aria-colindextext": 0,
+        "aria-rowindextext": 0
       },
       warnedProperties$1 = {},
       rARIA$1 = RegExp(
@@ -10747,7 +10786,7 @@
       completeSegmentData2 = stringToPrecomputedChunk('" data-pid="'),
       completeSegmentDataEnd = dataElementQuotedEnd,
       completeBoundaryScriptFunctionOnly = stringToPrecomputedChunk(
-        '$RB=[];$RV=function(b){$RT=performance.now();for(var a=0;a<b.length;a+=2){var c=b[a],e=b[a+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&g._reactRetry()}}b.length=0};\n$RC=function(b,a){if(a=document.getElementById(a))(b=document.getElementById(b))?(b.previousSibling.data="$~",$RB.push(b,a),2===$RB.length&&(b="number"!==typeof $RT?0:$RT,a=performance.now(),setTimeout($RV.bind(null,$RB),2300>a&&2E3<a?2300-a:b+300-a))):a.parentNode.removeChild(a)};'
+        '$RB=[];$RV=function(a){$RT=performance.now();for(var b=0;b<a.length;b+=2){var c=a[b],e=a[b+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&requestAnimationFrame(g._reactRetry)}}a.length=0};\n$RC=function(a,b){if(b=document.getElementById(b))(a=document.getElementById(a))?(a.previousSibling.data="$~",$RB.push(a,b),2===$RB.length&&("number"!==typeof $RT?requestAnimationFrame($RV.bind(null,$RB)):(a=performance.now(),setTimeout($RV.bind(null,$RB),2300>a&&2E3<a?2300-a:$RT+300-a)))):b.parentNode.removeChild(b)};'
       ),
       completeBoundaryUpgradeToViewTransitionsInstruction = stringToChunk(
         '$RV=function(A,g){function k(a,b){var e=a.getAttribute(b);e&&(b=a.style,l.push(a,b.viewTransitionName,b.viewTransitionClass),"auto"!==e&&(b.viewTransitionClass=e),(a=a.getAttribute("vt-name"))||(a="_T_"+K++ +"_"),b.viewTransitionName=a,B=!0)}var B=!1,K=0,l=[];try{var f=document.__reactViewTransition;if(f){f.finished.finally($RV.bind(null,g));return}var m=new Map;for(f=1;f<g.length;f+=2)for(var h=g[f].querySelectorAll("[vt-share]"),d=0;d<h.length;d++){var c=h[d];m.set(c.getAttribute("vt-name"),c)}var u=[];for(h=0;h<g.length;h+=2){var C=g[h],x=C.parentNode;if(x){var v=x.getBoundingClientRect();if(v.left||v.top||v.width||v.height){c=C;for(f=0;c;){if(8===c.nodeType){var r=c.data;if("/$"===r)if(0===f)break;else f--;else"$"!==r&&"$?"!==r&&"$~"!==r&&"$!"!==r||f++}else if(1===c.nodeType){d=c;var D=d.getAttribute("vt-name"),y=m.get(D);k(d,y?"vt-share":"vt-exit");y&&(k(y,"vt-share"),m.set(D,null));var E=d.querySelectorAll("[vt-share]");for(d=0;d<E.length;d++){var F=E[d],G=F.getAttribute("vt-name"),\nH=m.get(G);H&&(k(F,"vt-share"),k(H,"vt-share"),m.set(G,null))}}c=c.nextSibling}for(var I=g[h+1],t=I.firstElementChild;t;)null!==m.get(t.getAttribute("vt-name"))&&k(t,"vt-enter"),t=t.nextElementSibling;c=x;do for(var n=c.firstElementChild;n;){var J=n.getAttribute("vt-update");J&&"none"!==J&&!l.includes(n)&&k(n,"vt-update");n=n.nextElementSibling}while((c=c.parentNode)&&1===c.nodeType&&"none"!==c.getAttribute("vt-update"));u.push.apply(u,I.querySelectorAll(\'img[src]:not([loading="lazy"])\'))}}}if(B){var z=\ndocument.__reactViewTransition=document.startViewTransition({update:function(){A(g);for(var a=[document.documentElement.clientHeight,document.fonts.ready],b={},e=0;e<u.length;b={g:b.g},e++)if(b.g=u[e],!b.g.complete){var p=b.g.getBoundingClientRect();0<p.bottom&&0<p.right&&p.top<window.innerHeight&&p.left<window.innerWidth&&(p=new Promise(function(w){return function(q){w.g.addEventListener("load",q);w.g.addEventListener("error",q)}}(b)),a.push(p))}return Promise.race([Promise.all(a),new Promise(function(w){var q=\nperformance.now();setTimeout(w,2300>q&&2E3<q?2300-q:500)})])},types:[]});z.ready.finally(function(){for(var a=l.length-3;0<=a;a-=3){var b=l[a],e=b.style;e.viewTransitionName=l[a+1];e.viewTransitionClass=l[a+1];""===b.getAttribute("style")&&b.removeAttribute("style")}});z.finished.finally(function(){document.__reactViewTransition===z&&(document.__reactViewTransition=null)});$RB=[];return}}catch(a){}A(g)}.bind(null,$RV);'
@@ -11325,5 +11364,5 @@
         startWork(request);
       });
     };
-    exports.version = "19.2.0-experimental-73aa744b-20250702";
+    exports.version = "19.2.0-experimental-2805f0ed-20250903";
   })();

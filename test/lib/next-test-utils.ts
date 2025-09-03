@@ -28,13 +28,15 @@ import type { RequestInit, Response } from 'node-fetch'
 import type { NextServer } from 'next/dist/server/next'
 import { Playwright } from 'next-webdriver'
 
-import { getTurbopackFlag, shouldRunTurboDevTest } from './turbo'
+import { shouldUseTurbopack } from './turbo'
 import stripAnsi from 'strip-ansi'
+import escapeRegex from 'escape-string-regexp'
+
 // TODO: Create dedicated Jest environment that sets up these matchers
 // Edge Runtime unit tests fail with "EvalError: Code generation from strings disallowed for this context" if these matchers are imported in those tests.
 import './add-redbox-matchers'
 
-export { shouldRunTurboDevTest }
+export { shouldUseTurbopack }
 
 export const nextServer = server
 export const pkg = _pkg
@@ -451,11 +453,11 @@ export function launchApp(
   opts?: NextDevOptions
 ) {
   const options = opts ?? {}
-  const useTurbo = shouldRunTurboDevTest()
+  const useTurbo = shouldUseTurbopack()
 
   return runNextCommandDev(
     [
-      useTurbo ? getTurbopackFlag() : undefined,
+      useTurbo ? '--turbopack' : undefined,
       dir,
       '-p',
       port as string,
@@ -962,6 +964,43 @@ export async function openDevToolsIndicatorPopover(
   }
 }
 
+export async function getSegmentExplorerRoute(browser: Playwright) {
+  return await browser
+    .elementByCss('.segment-explorer-page-route-bar-path')
+    .text()
+    .catch(() => '<empty>')
+}
+
+export async function getSegmentExplorerContent(browser: Playwright) {
+  // open the devtool button
+  await openDevToolsIndicatorPopover(browser)
+
+  // open the segment explorer
+  await browser.elementByCss('[data-segment-explorer]').click()
+
+  //  wait for the segment explorer to be visible
+  await browser.waitForElementByCss('[data-nextjs-devtool-segment-explorer]')
+
+  const rows = await browser.elementsByCss('.segment-explorer-item')
+  let result: string[] = []
+  for (const row of rows) {
+    // query filename of row: segment-explorer-filename
+    const segment = (
+      (await (await row.$('.segment-explorer-filename--path'))?.innerText()) ||
+      ''
+    ).trim()
+    const files = (
+      (await (await row.$('.segment-explorer-files'))?.innerText()) || ''
+    )
+      .split(/\n+/)
+      .map((file) => file.trim())
+
+    // line format: segment [files]
+    result.push(`${segment} [${files.join(', ')}]`)
+  }
+  return result.join('\n')
+}
+
 export async function hasDevToolsPanel(browser: Playwright) {
   const result = await browser.eval(() => {
     const portal = document.querySelector('nextjs-portal')
@@ -1247,6 +1286,35 @@ export function readNextBuildServerPageFile(appDir: string, page: string) {
   return readFileSync(path.join(appDir, '.next', 'server', pageFile), 'utf8')
 }
 
+export function getClientBuildManifest(dir: string) {
+  let buildId = readFileSync(path.join(dir, '.next/BUILD_ID'), 'utf8')
+  let code = readFileSync(
+    path.join(dir, '.next/static', buildId, '_buildManifest.js'),
+    'utf8'
+  )
+  // eslint-disable-next-line no-eval
+  let manifest = (0, eval)(`var self = global;${code};self.__BUILD_MANIFEST`)
+  return manifest
+}
+
+export function getClientBuildManifestLoaderChunkUrlPath(
+  dir: string,
+  page: string
+) {
+  let manifest = getClientBuildManifest(dir)
+  let chunk: string[] | undefined = manifest[page]
+  if (chunk == null) {
+    throw new Error(`Couldn't find page "${page}" in _buildManifest.js`)
+  }
+  if (chunk.length !== 1) {
+    throw new Error(
+      `Expected a single chunk, but found ${chunk.length} for "${page}" in _buildManifest.js`
+    )
+  }
+  // Remove leading './' so that this can be used in a `url.contains(chunk)` check.
+  return encodeURI(chunk[0].replace(/^\.\//, ''))
+}
+
 function runSuite(
   suiteName: string,
   context: { env: 'prod' | 'dev'; appDir: string } & Partial<{
@@ -1370,7 +1438,7 @@ export function getSnapshotTestDescribe(variant: TestVariants) {
     )
   }
 
-  const shouldRunTurboDev = shouldRunTurboDevTest()
+  const shouldRunTurboDev = shouldUseTurbopack()
   const shouldSkip =
     (runningEnv === 'turbo' && !shouldRunTurboDev) ||
     (runningEnv === 'default' && shouldRunTurboDev)
@@ -1428,7 +1496,7 @@ export async function getRedboxCallStack(
         // `innerText` will be "${methodName}\n${location}".
         // Ideally `innerText` would be "${methodName} ${location}"
         // so that c&p automatically does the right thing.
-        const frame = frameElement.innerText.replace('\n', ' ')
+        const frame = frameElement.innerText.replace(/\n+/g, ' ')
 
         // TODO: Special marker if source-mapping fails.
 
@@ -1449,10 +1517,6 @@ export async function getRedboxCallStack(
           stack.push('<FIXME-file-protocol>')
         } else if (frame.includes('.next/')) {
           stack.push('<FIXME-next-dist-dir>')
-        } else if (frame === 'JSON.parse <anonymous>') {
-          // TODO(veil): These frames will be ignore-listed soon. Until then, we
-          // remove them here, because their occurrence seems to be
-          // non-deterministic. They come from React's RSC parsing.
         } else {
           stack.push(frame)
         }
@@ -1518,7 +1582,7 @@ export function getUrlFromBackgroundImage(backgroundImage: string) {
 }
 
 export const getTitle = (browser: Playwright) =>
-  browser.elementByCss('title').text()
+  browser.elementByCss('title', { state: 'attached' }).text()
 
 async function checkMeta(
   browser: Playwright,
@@ -1768,4 +1832,42 @@ export function trimEndMultiline(str: string) {
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n')
+}
+
+/**
+ * Normalizes the manifest by applying the replacements to the manifest. This
+ * is useful for testing the manifest in a snapshot test.
+ *
+ * @param manifest - The manifest to normalize.
+ * @param replacements - The replacements to perform on the manifest.
+ * @returns The normalized manifest.
+ */
+export function normalizeManifest<T>(
+  manifest: unknown,
+  replacements: [search: string, replace: string][]
+): T {
+  return JSON.parse(
+    replacements.reduce(
+      (acc, [search, replace]) =>
+        acc.replace(
+          new RegExp(
+            // We want to match the literal string, so we need to escape it
+            // again
+            escapeRegex(
+              JSON.stringify(
+                // The output has already been escaped, so we need to escape our
+                // search string.
+                escapeRegex(search)
+              )
+                // Remove the quotes added by the JSON.stringify call.
+                .replace(/^"(.*)"/, '$1')
+            ),
+            'g'
+          ),
+          replace
+        ),
+      // We'll perform the replacements on the JSON stringified manifest.
+      JSON.stringify(manifest)
+    )
+  )
 }

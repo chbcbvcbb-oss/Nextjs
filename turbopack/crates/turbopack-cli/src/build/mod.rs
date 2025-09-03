@@ -210,7 +210,7 @@ async fn build_internal(
         .unwrap_or(project_relative)
         .replace(MAIN_SEPARATOR, "/")
         .into();
-    let root_path = project_fs.root().await?.clone_value();
+    let root_path = project_fs.root().owned().await?;
     let project_path = root_path.join(&project_relative)?;
     let build_output_root = output_fs.root().await?.join("dist")?;
 
@@ -237,9 +237,12 @@ async fn build_internal(
                 build_output_root.clone(),
                 build_output_root.clone(),
                 build_output_root.clone(),
-                Environment::new(ExecutionEnvironment::NodeJsLambda(
-                    NodeJsEnvironment::default().resolved_cell(),
-                ))
+                Environment::new(
+                    ExecutionEnvironment::NodeJsLambda(
+                        NodeJsEnvironment::default().resolved_cell(),
+                    ),
+                    compile_time_info.css_environment(),
+                )
                 .to_resolved()
                 .await?,
                 runtime_type,
@@ -268,7 +271,7 @@ async fn build_internal(
                     false,
                 ),
                 EntryRequest::Module(m, p) => Request::module(
-                    m.clone(),
+                    m.clone().into(),
                     p.clone().into(),
                     Default::default(),
                     Default::default(),
@@ -321,6 +324,14 @@ async fn build_internal(
 
     let chunking_context: Vc<Box<dyn ChunkingContext>> = match target {
         Target::Browser => {
+            let browser_environment = BrowserEnvironment {
+                dom: true,
+                web_worker: false,
+                service_worker: false,
+                browserslist_query: browserslist_query.clone(),
+            }
+            .resolved_cell();
+
             let mut builder = BrowserChunkingContext::builder(
                 project_path,
                 build_output_root.clone(),
@@ -328,15 +339,10 @@ async fn build_internal(
                 build_output_root.clone(),
                 build_output_root.clone(),
                 build_output_root.clone(),
-                Environment::new(ExecutionEnvironment::Browser(
-                    BrowserEnvironment {
-                        dom: true,
-                        web_worker: false,
-                        service_worker: false,
-                        browserslist_query: browserslist_query.clone(),
-                    }
-                    .resolved_cell(),
-                ))
+                Environment::new(
+                    ExecutionEnvironment::Browser(browser_environment),
+                    *browser_environment,
+                )
                 .to_resolved()
                 .await?,
                 runtime_type,
@@ -382,9 +388,12 @@ async fn build_internal(
                 build_output_root.clone(),
                 build_output_root.clone(),
                 build_output_root.clone(),
-                Environment::new(ExecutionEnvironment::NodeJsLambda(
-                    NodeJsEnvironment::default().resolved_cell(),
-                ))
+                Environment::new(
+                    ExecutionEnvironment::NodeJsLambda(
+                        NodeJsEnvironment::default().resolved_cell(),
+                    ),
+                    BrowserEnvironment::default().cell(),
+                )
                 .to_resolved()
                 .await?,
                 runtime_type,
@@ -502,7 +511,7 @@ async fn build_internal(
 
     chunks
         .iter()
-        .map(|c| async move { c.content().write(c.path().await?.clone_value()).await })
+        .map(|c| async move { c.content().write(c.path().owned().await?).await })
         .try_join()
         .await?;
 

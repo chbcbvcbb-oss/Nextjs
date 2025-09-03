@@ -120,10 +120,7 @@ impl Asset for MdxTransformedAsset {
     async fn content(self: ResolvedVc<Self>) -> Result<Vc<AssetContent>> {
         let this = self.await?;
         Ok(*transform_process_operation(self)
-            .issue_file_path(
-                this.source.ident().path().await?.clone_value(),
-                "MDX processing",
-            )
+            .issue_file_path(this.source.ident().path().owned().await?, "MDX processing")
             .await?
             .connect()
             .await?
@@ -286,12 +283,4 @@ impl Issue for MdxIssue {
             StyledString::Text(self.reason.clone()).resolved_cell(),
         ))
     }
-}
-
-pub fn register() {
-    turbo_tasks::register();
-    turbo_tasks_fs::register();
-    turbopack_core::register();
-    turbopack_ecmascript::register();
-    include!(concat!(env!("OUT_DIR"), "/register.rs"));
 }

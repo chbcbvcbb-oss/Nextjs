@@ -684,6 +684,17 @@ export async function ncc_image_size(task, opts) {
 }
 
 // eslint-disable-next-line camelcase
+externals['image-detector'] = 'next/dist/compiled/image-detector'
+export async function ncc_image_detector(task, opts) {
+  // NOTE: remove this special compile step if the upstream PR lands
+  // https://github.com/image-size/image-size/pull/451
+  await task
+    .source(relative(__dirname, require.resolve('image-size/dist/detector.js')))
+    .ncc({ packageName: 'image-size', externals })
+    .target('src/compiled/image-detector')
+}
+
+// eslint-disable-next-line camelcase
 externals['@hapi/accept'] = 'next/dist/compiled/@hapi/accept'
 export async function ncc_hapi_accept(task, opts) {
   await task
@@ -1822,24 +1833,10 @@ export async function copy_vendor_react(task_) {
         // package will be bundled alongside user code and we don't need to introduce the extra
         // indirection
 
-        if (file.base.startsWith('react-server-dom-turbopack-client.browser')) {
-          const source = file.data.toString()
-          const filepath = file.dir + '/' + file.base
-          const ast = parseFile(source, { sourceFileName: filepath })
-          replaceIdentifiersInAst(
-            ast,
-            new Map([
-              [
-                '__turbopack_load__',
-                parseExpression('__turbopack_load_by_url__'),
-              ],
-            ])
-          )
-          file.data = recast.print(ast).code
-        } else if (
-          file.base.startsWith('react-server-dom-turbopack-client') ||
-          (file.base.startsWith('react-server-dom-turbopack-server') &&
-            !file.base.startsWith('react-server-dom-turbopack-server.browser'))
+        if (
+          (file.base.startsWith('react-server-dom-turbopack-client') ||
+            file.base.startsWith('react-server-dom-turbopack-server')) &&
+          !file.base.includes('.browser.')
         ) {
           const source = file.data.toString()
           const filepath = file.dir + '/' + file.base
@@ -1849,7 +1846,7 @@ export async function copy_vendor_react(task_) {
             ast,
             new Map([
               [
-                '__turbopack_load__',
+                '__turbopack_load_by_url__',
                 parseExpression('globalThis.__next_chunk_load__'),
               ],
               [
@@ -2279,6 +2276,18 @@ export async function ncc_https_proxy_agent(task, opts) {
     .target('src/compiled/https-proxy-agent')
 }
 
+externals['safe-stable-stringify'] = 'next/dist/compiled/safe-stable-stringify'
+export async function ncc_safe_stable_stringify(task, opts) {
+  await task
+    .source(relative(__dirname, require.resolve('safe-stable-stringify')))
+    .ncc({
+      packageName: 'safe-stable-stringify',
+      externals,
+      target: 'es5',
+    })
+    .target('src/compiled/safe-stable-stringify')
+}
+
 export async function precompile(task, opts) {
   await task.parallel(
     ['browser_polyfills', 'copy_ncced', 'copy_styled_jsx_assets'],
@@ -2298,6 +2307,7 @@ export async function ncc(task, opts) {
     .clear('src/compiled')
     .parallel(
       [
+        'ncc_safe_stable_stringify',
         'ncc_amp_optimizer',
         'ncc_node_html_parser',
         'ncc_napirs_triples',
@@ -2305,6 +2315,7 @@ export async function ncc(task, opts) {
         'ncc_p_queue',
         'ncc_raw_body',
         'ncc_image_size',
+        'ncc_image_detector',
         'ncc_hapi_accept',
         'ncc_commander',
         'ncc_node_anser',

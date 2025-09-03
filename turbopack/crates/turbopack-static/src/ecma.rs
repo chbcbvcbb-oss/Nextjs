@@ -137,7 +137,7 @@ impl EcmascriptChunkItem for StaticUrlJsChunkItem {
                 path = StringifyJs(
                     &self
                         .chunking_context
-                        .asset_url(self.static_asset.path().await?.clone_value())
+                        .asset_url(self.static_asset.path().owned().await?)
                         .await?
                 )
             )
@@ -146,12 +146,4 @@ impl EcmascriptChunkItem for StaticUrlJsChunkItem {
         }
         .into())
     }
-}
-
-pub fn register() {
-    turbo_tasks::register();
-    turbo_tasks_fs::register();
-    turbopack_core::register();
-    turbopack_ecmascript::register();
-    include!(concat!(env!("OUT_DIR"), "/register.rs"));
 }
