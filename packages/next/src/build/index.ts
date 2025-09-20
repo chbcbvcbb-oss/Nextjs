@@ -61,6 +61,7 @@ import {
   PRERENDER_MANIFEST,
   REACT_LOADABLE_MANIFEST,
   ROUTES_MANIFEST,
+  SERIALIZED_CONFIG_FILE,
   SERVER_DIRECTORY,
   SERVER_FILES_MANIFEST,
   STATIC_STATUS_PAGES,
@@ -2722,6 +2723,36 @@ export default async function build(
         distDir,
         requiredServerFilesManifest
       )
+
+      // The required-server-files manifest contains serialized config, which can
+      // be loaded by the prod server. However, when a custom distDir is set,
+      // the prod server will not know the distDir until loading the config.
+      // Therefore we write the serialized config to the same directory as the
+      // original config file.
+      if (
+        config.output !== 'standalone' &&
+        config.distDir !== '.next' &&
+        // Use nullish coalescing (??) since we don't want to return when it's false.
+        (config.experimental?.serializeNextConfigForProduction ??
+          // This flag is used to be enabled on the tests.
+          process.env
+            .__NEXT_EXPERIMENTAL_SERIALIZE_NEXT_CONFIG_FOR_PRODUCTION ===
+            'true')
+      ) {
+        const serializedConfigPath = path.join(
+          // Write to the same directory as the original config file.
+          config.configFile ? path.dirname(config.configFile) : dir,
+          SERIALIZED_CONFIG_FILE
+        )
+        await fs.writeFile(
+          serializedConfigPath,
+          JSON.stringify({
+            // To match the format of required server files manifest.
+            version: 1,
+            config: requiredServerFilesManifest.config,
+          })
+        )
+      }
 
       // we don't need to inline for turbopack build as
       // it will handle it's own caching separate of compile

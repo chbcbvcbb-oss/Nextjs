@@ -1,5 +1,13 @@
-import { existsSync } from 'fs'
-import { basename, extname, join, relative, isAbsolute, resolve } from 'path'
+import { existsSync, readFileSync } from 'fs'
+import {
+  basename,
+  extname,
+  join,
+  relative,
+  isAbsolute,
+  resolve,
+  dirname,
+} from 'path'
 import { pathToFileURL } from 'url'
 import findUp from 'next/dist/compiled/find-up'
 import * as Log from '../build/output/log'
@@ -9,6 +17,9 @@ import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_EXPORT,
   PHASE_PRODUCTION_BUILD,
+  PHASE_PRODUCTION_SERVER,
+  SERVER_FILES_MANIFEST,
+  SERIALIZED_CONFIG_FILE,
   type PHASE_TYPE,
 } from '../shared/lib/constants'
 import { defaultConfig, normalizeConfig } from './config-shared'
@@ -1344,6 +1355,93 @@ export default async function loadConfig(
     return standaloneConfig
   }
 
+  let path: string | undefined
+  // During prod server, we can load from the serialized config.
+  if (phase === PHASE_PRODUCTION_SERVER) {
+    // Try load from ".next" dir since we don't know the
+    // distDir until loading the config.
+    try {
+      const possiblyServerFilesManifestPath = join(
+        dir,
+        '.next',
+        SERVER_FILES_MANIFEST
+      )
+      if (existsSync(possiblyServerFilesManifestPath)) {
+        const parsed = JSON.parse(
+          readFileSync(possiblyServerFilesManifestPath, 'utf8')
+        )
+        const config: NextConfigComplete = parsed.config
+
+        if (
+          // Don't return here and will eventually fall back to loading the config.
+          // Use nullish coalescing (??) since we don't want to return when it's false.
+          config?.experimental?.serializeNextConfigForProduction ??
+          // This flag is used to be enabled on the tests.
+          process.env
+            .__NEXT_EXPERIMENTAL_SERIALIZE_NEXT_CONFIG_FOR_PRODUCTION === 'true'
+        ) {
+          // Cache the config
+          configCache.set(cacheKey, {
+            config,
+            rawConfig: config,
+            configuredExperimentalFeatures: [],
+          })
+
+          return config
+        }
+      }
+    } catch {
+      // Continue to next option
+    }
+
+    // If the custom distDir is set, we write the serialized config
+    // to the same directory as the original config file.
+    path = await findUp(CONFIG_FILES, { cwd: dir })
+    const targetDir = path ? dirname(path) : dir
+
+    // Even though serializeNextConfigForProduction might be disabled, we still need to check
+    // the existSync because there's no way to know if serializeNextConfigForProduction
+    // is disabled until we load the config.
+    const serializedConfigPath = join(targetDir, SERIALIZED_CONFIG_FILE)
+    try {
+      if (existsSync(serializedConfigPath)) {
+        const parsed = JSON.parse(readFileSync(serializedConfigPath, 'utf8'))
+        const config: NextConfigComplete = parsed.config
+
+        if (
+          // Don't return here and will eventually fall back to loading the config.
+          // Use nullish coalescing (??) since we don't want to return when it's false.
+          config?.experimental?.serializeNextConfigForProduction ??
+          // This flag is used to be enabled on the tests.
+          process.env
+            .__NEXT_EXPERIMENTAL_SERIALIZE_NEXT_CONFIG_FOR_PRODUCTION === 'true'
+        ) {
+          // Cache the config
+          configCache.set(cacheKey, {
+            config,
+            rawConfig: config,
+            configuredExperimentalFeatures: [],
+          })
+
+          return config
+        }
+      }
+    } catch (cause) {
+      if (
+        // This flag is used to be enabled on the tests.
+        process.env.__NEXT_EXPERIMENTAL_SERIALIZE_NEXT_CONFIG_FOR_PRODUCTION ===
+        'true'
+      ) {
+        throw new Error(
+          `Failed to load serialized config "${serializedConfigPath}".`,
+          { cause }
+        )
+      }
+    }
+
+    // Fall back to loading the config.
+  }
+
   const curLog = silent
     ? {
         warn: () => {},
@@ -1389,7 +1487,7 @@ export default async function loadConfig(
     return config
   }
 
-  const path = await findUp(CONFIG_FILES, { cwd: dir })
+  path ??= await findUp(CONFIG_FILES, { cwd: dir })
 
   // If config file was found
   if (path?.length) {

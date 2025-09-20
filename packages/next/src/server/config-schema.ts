@@ -526,6 +526,7 @@ export const configSchema: zod.ZodType<NextConfig> = z.lazy(() =>
           ])
           .optional(),
         optimizeRouterScrolling: z.boolean().optional(),
+        serializeNextConfigForProduction: z.boolean().optional(),
       })
       .optional(),
     exportPathMap: z

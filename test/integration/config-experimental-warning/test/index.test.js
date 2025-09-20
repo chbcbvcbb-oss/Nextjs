@@ -21,20 +21,25 @@ const experimentalHeader = ' - Experiments (use with caution):'
 let app
 async function collectStdoutFromDev(appDir) {
   let stdout = ''
+  let stderr = ''
   const port = await findPort()
   app = await launchApp(appDir, port, {
     onStdout(msg) {
       stdout += msg
     },
+    onStderr(msg) {
+      stderr += msg
+    },
   })
-  return stdout
+  return { stdout, stderr }
 }
 
 async function collectStdoutFromBuild(appDir) {
-  const { stdout } = await nextBuild(appDir, [], {
+  const { stdout, stderr } = await nextBuild(appDir, [], {
     stdout: true,
+    stderr: true,
   })
-  return stdout
+  return { stdout, stderr }
 }
 
 describe('Config Experimental Warning', () => {
@@ -58,7 +63,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).not.toMatch(experimentalHeader)
   })
 
@@ -69,7 +74,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).not.toMatch(experimentalHeader)
   })
 
@@ -82,7 +87,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).toMatch(experimentalHeader)
     expect(stdout).toMatch(' ✓ workerThreads')
   })
@@ -96,7 +101,7 @@ describe('Config Experimental Warning', () => {
       })
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).toMatch(experimentalHeader)
     expect(stdout).toMatch(' ✓ workerThreads')
   })
@@ -110,7 +115,7 @@ describe('Config Experimental Warning', () => {
       })
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).not.toContain(experimentalHeader)
     expect(stdout).not.toContain('workerThreads')
   })
@@ -124,7 +129,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).toMatch(experimentalHeader)
     expect(stdout).toMatch(' ⨯ prerenderEarlyExit')
   })
@@ -138,7 +143,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).toMatch(experimentalHeader)
     expect(stdout).toMatch(' · cpus: 2')
   })
@@ -152,7 +157,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).toMatch(experimentalHeader)
     expect(stdout).toMatch(' · ppr: "incremental"')
   })
@@ -167,7 +172,7 @@ describe('Config Experimental Warning', () => {
       }
     `)
 
-    const stdout = await collectStdoutFromDev(appDir)
+    const { stdout } = await collectStdoutFromDev(appDir)
     expect(stdout).toContain(experimentalHeader)
     expect(stdout).toContain(' ✓ workerThreads')
     expect(stdout).toContain(' ✓ scrollRestoration')
@@ -210,7 +215,7 @@ describe('Config Experimental Warning', () => {
           }
         }
       `)
-        const stdout = await collectStdoutFromBuild(appDir)
+        const { stdout } = await collectStdoutFromBuild(appDir)
         expect(stdout).toMatch(experimentalHeader)
         expect(stdout).toMatch(' · cpus: 2')
         expect(stdout).toMatch(' ✓ workerThreads')
@@ -219,7 +224,8 @@ describe('Config Experimental Warning', () => {
         expect(stdout).toMatch(' ✓ parallelServerCompiles')
       })
 
-      it('should show unrecognized experimental features in warning but not in start log experiments section', async () => {
+      // In prod, it will load a serialized config, so the warning will not appear during start.
+      it('should show unrecognized experimental features in warning but not in start log experiments section during build', async () => {
         configFile.write(`
         module.exports = {
           experimental: {
@@ -228,7 +234,8 @@ describe('Config Experimental Warning', () => {
         }
       `)
 
-        await collectStdoutFromBuild(appDir)
+        const { stderr: buildStderr } = await collectStdoutFromBuild(appDir)
+
         const port = await findPort()
         let stdout = ''
         let stderr = ''
@@ -242,13 +249,27 @@ describe('Config Experimental Warning', () => {
         })
 
         await check(() => {
-          const cliOutput = stripAnsi(stdout)
-          const cliOutputErr = stripAnsi(stderr)
-          expect(cliOutput).not.toContain(experimentalHeader)
-          expect(cliOutputErr).toContain(
+          // TODO: experimentalHeader shows on build, likely not validating properly.
+          // expect(stripAnsi(buildStdout)).not.toContain(experimentalHeader)
+          expect(stripAnsi(buildStderr)).toContain(
             `Unrecognized key(s) in object: 'appDir' at "experimental"`
           )
         })
+
+        // For serialized config, the warning will not appear during start.
+        if (
+          process.env
+            .__NEXT_EXPERIMENTAL_SERIALIZE_NEXT_CONFIG_FOR_PRODUCTION !== 'true'
+        ) {
+          await check(() => {
+            const cliOutput = stripAnsi(stdout)
+            const cliOutputErr = stripAnsi(stderr)
+            expect(cliOutput).not.toContain(experimentalHeader)
+            expect(cliOutputErr).toContain(
+              `Unrecognized key(s) in object: 'appDir' at "experimental"`
+            )
+          })
+        }
       })
     }
   )

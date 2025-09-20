@@ -818,6 +818,16 @@ export interface ExperimentalConfig {
    * instead of `{distDir}`.
    */
   isolatedDevBuild?: boolean
+
+  /**
+   * When enabled, the production server will use the serialized config file
+   * instead of the original config file. This can save the time of loading the
+   * config file, especially when you are using `next.config.ts`. When the `distDir`
+   * is set, the serialized config `next-config-serialized.json` will be written to
+   * the same directory as the original config file. This is because Next.js doesn't
+   * know the `distDir` until loading the config.
+   */
+  serializeNextConfigForProduction?: boolean
 }
 
 export type ExportPathMap = {
@@ -1495,6 +1505,10 @@ export const defaultConfig = Object.freeze({
     browserDebugInfoInTerminal: false,
     optimizeRouterScrolling: false,
     isolatedDevBuild: false,
+    serializeNextConfigForProduction:
+      // This flag is used to be enabled on the tests.
+      process.env.__NEXT_EXPERIMENTAL_SERIALIZE_NEXT_CONFIG_FOR_PRODUCTION ===
+      'true',
   },
   htmlLimitedBots: undefined,
   bundlePagesRouterDependencies: false,
