@@ -844,6 +844,35 @@ export async function buildAppStaticPaths({
     generateRouteStaticParams(segments, store)
   )
 
+  // Early validation for unexpected parameter keys in routeParams.
+  // "/[id]" would expect key "id", but if "id2" is provided, it's invalid.
+  const expectedParamKeys = new Set(
+    childrenRouteParamSegments.map((p) => p.paramName)
+  )
+  const invalidParamKeys = new Set<string>()
+  for (const params of routeParams) {
+    if (typeof params !== 'object' || params === null) {
+      throw new Error(
+        `generateStaticParams returned a non-object "${typeof params}" value "${params}" while processing page "${page}".`
+      )
+    }
+    for (const key in params) {
+      if (!expectedParamKeys.has(key)) {
+        invalidParamKeys.add(key)
+      }
+    }
+  }
+
+  if (invalidParamKeys.size > 0) {
+    throw new Error(
+      `Invalid params keys found in generateStaticParams for "${page}":\n${[
+        ...invalidParamKeys,
+      ]
+        .map((key) => `  - "${key}"`)
+        .join('\n')}`
+    )
+  }
+
   await afterRunner.executeAfter()
 
   let lastDynamicSegmentHadGenerateStaticParams = false
