@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use criterion::{Bencher, BenchmarkId, Criterion};
+use criterion::{Bencher, BenchmarkId, Criterion, criterion_group, criterion_main};
 use turbo_rcstr::rcstr;
 use turbo_tasks::{ResolvedVc, TurboTasks};
 use turbo_tasks_backend::{
@@ -9,15 +9,18 @@ use turbo_tasks_backend::{
 use turbo_tasks_fs::{DiskFileSystem, FileSystem};
 use turbopack_core::{
     compile_time_info::CompileTimeInfo,
-    environment::{BrowserEnvironment, Environment, ExecutionEnvironment, NodeJsEnvironment},
+    environment::{Environment, ExecutionEnvironment, NodeJsEnvironment},
     file_source::FileSource,
     ident::Layer,
 };
 use turbopack_ecmascript::{
     EcmascriptInputTransforms, EcmascriptModuleAsset, EcmascriptOptions, TreeShakingMode,
-    references::analyse_ecmascript_module_internal,
+    references::analyze_ecmascript_module_internal,
 };
 use turbopack_test_utils::noop_asset_context::NoopAssetContext;
+
+#[global_allocator]
+static ALLOC: turbo_tasks_malloc::TurboMalloc = turbo_tasks_malloc::TurboMalloc;
 
 pub fn benchmark(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -38,10 +41,9 @@ pub fn benchmark(c: &mut Criterion) {
             let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/benches/");
             let fs = DiskFileSystem::new(rcstr!("project"), root_dir.to_str().unwrap().into());
 
-            let environment = Environment::new(
-                ExecutionEnvironment::NodeJsLambda(NodeJsEnvironment::default().resolved_cell()),
-                BrowserEnvironment::default().cell(),
-            );
+            let environment = Environment::new(ExecutionEnvironment::NodeJsLambda(
+                NodeJsEnvironment::default().resolved_cell(),
+            ));
             let compile_time_info = CompileTimeInfo::new(environment).to_resolved().await?;
             let layer = Layer::new(rcstr!("test"));
             let module_asset_context = NoopAssetContext {
@@ -51,7 +53,7 @@ pub fn benchmark(c: &mut Criterion) {
             .resolved_cell();
 
             let mut cases = vec![];
-            for (file, is_tracing) in [
+            for (file, analyze_mode) in [
                 (r#"packages-bundle.js"#, false),
                 (r#"packages-bundle.js"#, true),
                 (r#"app-page-turbo.runtime.prod.js"#, false),
@@ -69,7 +71,11 @@ pub fn benchmark(c: &mut Criterion) {
                     EcmascriptInputTransforms::empty().to_resolved().await?,
                     EcmascriptOptions {
                         tree_shaking_mode: Some(TreeShakingMode::ReexportsOnly),
-                        is_tracing,
+                        analyze_mode: if analyze_mode {
+                            turbopack_ecmascript::AnalyzeMode::Tracing
+                        } else {
+                            turbopack_ecmascript::AnalyzeMode::CodeGenerationAndTracing
+                        },
                         ..Default::default()
                     }
                     .resolved_cell(),
@@ -81,7 +87,7 @@ pub fn benchmark(c: &mut Criterion) {
 
                 cases.push((
                     file.rsplit("/").next().unwrap(),
-                    if is_tracing { "tracing" } else { "full" },
+                    if analyze_mode { "tracing" } else { "full" },
                     module,
                 ));
             }
@@ -124,8 +130,11 @@ where
     b.to_async(rt).iter(async || {
         input
             .storage
-            .run_once(analyse_ecmascript_module_internal(input.module, None))
+            .run_once(analyze_ecmascript_module_internal(input.module, None))
             .await
             .unwrap()
     });
 }
+
+criterion_group!(references_benches, benchmark);
+criterion_main!(references_benches);

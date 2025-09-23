@@ -9,15 +9,13 @@ import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_EXPORT,
   PHASE_PRODUCTION_BUILD,
-  PHASE_PRODUCTION_SERVER,
+  type PHASE_TYPE,
 } from '../shared/lib/constants'
 import { defaultConfig, normalizeConfig } from './config-shared'
 import type {
   ExperimentalConfig,
   NextConfigComplete,
   NextConfig,
-  TurbopackLoaderItem,
-  NextAdapter,
 } from './config-shared'
 
 import { loadWebpackHook } from './config-utils'
@@ -43,6 +41,7 @@ import { findDir } from '../lib/find-pages-dir'
 import { CanaryOnlyError, isStableBuild } from '../shared/lib/canary-only'
 import { interopDefault } from '../lib/interop-default'
 import { djb2Hash } from '../shared/lib/hash'
+import type { NextAdapter } from '../build/adapter/build-complete'
 
 export { normalizeConfig } from './config-shared'
 export type { DomainLocale, NextConfig } from './config-shared'
@@ -215,7 +214,8 @@ function assignDefaultsAndValidate(
   dir: string,
   userConfig: NextConfig & { configFileName: string },
   silent: boolean,
-  configuredExperimentalFeatures: ConfiguredExperimentalFeature[]
+  configuredExperimentalFeatures: ConfiguredExperimentalFeature[],
+  phase: PHASE_TYPE
 ): NextConfigComplete {
   const configFileName = userConfig.configFileName
   if (typeof userConfig.exportTrailingSlash !== 'undefined') {
@@ -1198,20 +1198,24 @@ function assignDefaultsAndValidate(
     )
   }
 
+  if (
+    phase === PHASE_DEVELOPMENT_SERVER &&
+    result.experimental?.isolatedDevBuild
+  ) {
+    result.distDir = join(result.distDir, 'dev')
+  }
+
   return result as NextConfigComplete
 }
 
 async function applyModifyConfig(
   config: NextConfigComplete,
-  phase: string,
+  phase: PHASE_TYPE,
   silent: boolean
 ): Promise<NextConfigComplete> {
-  if (
-    // TODO: should this be called for server start as
-    // adapters shouldn't be relying on "next start"
-    [PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER].includes(phase) &&
-    config.experimental?.adapterPath
-  ) {
+  // we always call modify config  and phase can be used to only
+  // modify for specific times
+  if (config.experimental?.adapterPath) {
     const adapterMod = interopDefault(
       await import(
         pathToFileURL(require.resolve(config.experimental.adapterPath)).href
@@ -1222,7 +1226,10 @@ async function applyModifyConfig(
       if (!silent) {
         Log.info(`Applying modifyConfig from ${adapterMod.name}`)
       }
-      config = await adapterMod.modifyConfig(config)
+
+      config = await adapterMod.modifyConfig(config, {
+        phase,
+      })
     }
   }
   return config
@@ -1241,7 +1248,7 @@ const configCache = new Map<
 // Generate cache key based on parameters that affect config output
 // We need a unique key for cache because there can be multiple values
 function getCacheKey(
-  phase: string,
+  phase: PHASE_TYPE,
   dir: string,
   customConfig?: object | null,
   reactProductionProfiling?: boolean,
@@ -1261,7 +1268,7 @@ function getCacheKey(
 }
 
 export default async function loadConfig(
-  phase: string,
+  phase: PHASE_TYPE,
   dir: string,
   {
     customConfig,
@@ -1362,7 +1369,8 @@ export default async function loadConfig(
           ...customConfig,
         },
         silent,
-        configuredExperimentalFeatures
+        configuredExperimentalFeatures,
+        phase
       ) as NextConfigComplete,
       phase,
       silent
@@ -1449,7 +1457,7 @@ export default async function loadConfig(
       ) as (keyof ExperimentalConfig)[]) {
         const value = loadedConfig.experimental[name]
 
-        if (name === 'turbo' && !process.env.TURBOPACK) {
+        if (name.startsWith('turbopack') && !process.env.TURBOPACK) {
           // Ignore any Turbopack config if Turbopack is not enabled
           continue
         }
@@ -1493,47 +1501,6 @@ export default async function loadConfig(
       userConfig.reactProductionProfiling = reactProductionProfiling
     }
 
-    if (
-      userConfig.experimental?.turbo?.loaders &&
-      !userConfig.experimental?.turbo?.rules
-    ) {
-      curLog.warn(
-        'experimental.turbo.loaders is now deprecated. Please update next.config.js to use experimental.turbo.rules as soon as possible.\n' +
-          'The new option is similar, but the key should be a glob instead of an extension.\n' +
-          'Example: loaders: { ".mdx": ["mdx-loader"] } -> rules: { "*.mdx": ["mdx-loader"] }" }\n' +
-          'See more info here https://nextjs.org/docs/app/api-reference/next-config-js/turbo'
-      )
-
-      const rules: Record<string, TurbopackLoaderItem[]> = {}
-      for (const [ext, loaders] of Object.entries(
-        userConfig.experimental.turbo.loaders
-      )) {
-        rules['*' + ext] = loaders as TurbopackLoaderItem[]
-      }
-
-      userConfig.experimental.turbo.rules = rules
-    }
-
-    if (userConfig.experimental?.turbo) {
-      curLog.warn(
-        'The config property `experimental.turbo` is deprecated. Move this setting to `config.turbopack` or run `npx @next/codemod@latest next-experimental-turbo-to-turbopack .`'
-      )
-
-      // Merge the two configs, preferring values in `config.turbopack`.
-      userConfig.turbopack = {
-        ...userConfig.experimental.turbo,
-        ...userConfig.turbopack,
-      }
-      userConfig.experimental.turbopackMemoryLimit ??=
-        userConfig.experimental.turbo.memoryLimit
-      userConfig.experimental.turbopackMinify ??=
-        userConfig.experimental.turbo.minify
-      userConfig.experimental.turbopackTreeShaking ??=
-        userConfig.experimental.turbo.treeShaking
-      userConfig.experimental.turbopackSourceMaps ??=
-        userConfig.experimental.turbo.sourceMaps
-    }
-
     if (userConfig.experimental?.useLightningcss) {
       const { loadBindings } =
         require('../build/swc') as typeof import('../build/swc')
@@ -1569,7 +1536,8 @@ export default async function loadConfig(
         ...userConfig,
       },
       silent,
-      configuredExperimentalFeatures
+      configuredExperimentalFeatures,
+      phase
     ) as NextConfigComplete
 
     const finalConfig = await applyModifyConfig(completeConfig, phase, silent)
@@ -1592,7 +1560,8 @@ export default async function loadConfig(
       [
         `${configBaseName}.cjs`,
         `${configBaseName}.cts`,
-        `${configBaseName}.mts`,
+        // TODO: Remove `as any` once we bump @types/node to v22.10.0+
+        ...((process.features as any).typescript ? [] : ['next.config.mts']),
         `${configBaseName}.json`,
         `${configBaseName}.jsx`,
         `${configBaseName}.tsx`,
@@ -1623,7 +1592,8 @@ export default async function loadConfig(
     dir,
     { ...clonedDefaultConfig, configFileName },
     silent,
-    configuredExperimentalFeatures
+    configuredExperimentalFeatures,
+    phase
   ) as NextConfigComplete
 
   setHttpClientAndAgentOptions(completeConfig)
@@ -1656,7 +1626,7 @@ function enforceExperimentalFeatures(
     isDefaultConfig: boolean
     configuredExperimentalFeatures: ConfiguredExperimentalFeature[] | undefined
     debugPrerender: boolean | undefined
-    phase: string
+    phase: PHASE_TYPE
   }
 ) {
   const {

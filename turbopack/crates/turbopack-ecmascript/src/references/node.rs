@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tracing::Instrument;
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{ResolvedVc, ValueToString, Vc};
@@ -70,7 +70,6 @@ impl DirAssetReference {
     }
 }
 
-#[turbo_tasks::function]
 async fn resolve_reference_from_dir(
     parent_path: FileSystemPath,
     path: Vc<Pattern>,
@@ -124,10 +123,14 @@ async fn resolve_reference_from_dir(
                         FileSource::new(symlink.clone()).to_resolved().await?,
                     ));
                 }
+                let path: FileSystemPath = match &realpath.path_result {
+                    Ok(path) => path.clone(),
+                    Err(e) => bail!(e.as_error_message(file, &realpath)),
+                };
                 results.push((
                     RequestKey::new(matched_path.clone()),
                     ResolvedVc::upcast(
-                        RawModule::new(Vc::upcast(FileSource::new(realpath.path.clone())))
+                        RawModule::new(Vc::upcast(FileSource::new(path)))
                             .to_resolved()
                             .await?,
                     ),
@@ -151,13 +154,9 @@ impl ModuleReference for DirAssetReference {
             "trace directory",
             pattern = display(self.path.to_string().await?)
         );
-        async {
-            resolve_reference_from_dir(parent_path, *self.path)
-                .resolve()
-                .await
-        }
-        .instrument(span)
-        .await
+        resolve_reference_from_dir(parent_path, *self.path)
+            .instrument(span)
+            .await
     }
 }
 

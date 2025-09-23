@@ -108,7 +108,7 @@ impl NodeJsChunkingContextBuilder {
     {
         self.chunking_context
             .chunking_configs
-            .push((ResolvedVc::upcast(ty), chunking_config));
+            .push((ResolvedVc::upcast_non_strict(ty), chunking_config));
         self
     }
 
@@ -205,17 +205,16 @@ impl NodeJsChunkingContext {
     #[turbo_tasks::function]
     async fn generate_chunk(
         self: Vc<Self>,
-        chunk: Vc<Box<dyn Chunk>>,
+        chunk: ResolvedVc<Box<dyn Chunk>>,
     ) -> Result<Vc<Box<dyn OutputAsset>>> {
         Ok(
-            if let Some(ecmascript_chunk) =
-                Vc::try_resolve_downcast_type::<EcmascriptChunk>(chunk).await?
+            if let Some(ecmascript_chunk) = ResolvedVc::try_downcast_type::<EcmascriptChunk>(chunk)
             {
-                Vc::upcast(EcmascriptBuildNodeChunk::new(self, ecmascript_chunk))
+                Vc::upcast(EcmascriptBuildNodeChunk::new(self, *ecmascript_chunk))
             } else if let Some(output_asset) =
-                Vc::try_resolve_sidecast::<Box<dyn OutputAsset>>(chunk).await?
+                ResolvedVc::try_sidecast::<Box<dyn OutputAsset>>(chunk)
             {
-                output_asset
+                *output_asset
             } else {
                 bail!("Unable to generate output asset for chunk");
             },
@@ -389,6 +388,7 @@ impl ChunkingContext for NodeJsChunkingContext {
             let modules = chunk_group.entries();
             let MakeChunkGroupResult {
                 chunks,
+                referenced_output_assets,
                 availability_info,
             } = make_chunk_group(
                 modules,
@@ -406,6 +406,7 @@ impl ChunkingContext for NodeJsChunkingContext {
 
             Ok(ChunkGroupResult {
                 assets: ResolvedVc::cell(assets),
+                referenced_assets: ResolvedVc::cell(referenced_output_assets),
                 availability_info,
             }
             .cell())
@@ -421,6 +422,7 @@ impl ChunkingContext for NodeJsChunkingContext {
         evaluatable_assets: Vc<EvaluatableAssets>,
         module_graph: Vc<ModuleGraph>,
         extra_chunks: Vc<OutputAssets>,
+        extra_referenced_assets: Vc<OutputAssets>,
         availability_info: AvailabilityInfo,
     ) -> Result<Vc<EntryChunkGroupResult>> {
         let evaluatable_assets_ref = evaluatable_assets.await?;
@@ -430,6 +432,7 @@ impl ChunkingContext for NodeJsChunkingContext {
 
         let MakeChunkGroupResult {
             chunks,
+            mut referenced_output_assets,
             availability_info,
         } = make_chunk_group(
             entries,
@@ -440,17 +443,14 @@ impl ChunkingContext for NodeJsChunkingContext {
         .await?;
 
         let extra_chunks = extra_chunks.await?;
-        let other_chunks: Vec<_> = extra_chunks
+        let mut other_chunks = chunks
             .iter()
-            .copied()
-            .chain(
-                chunks
-                    .iter()
-                    .map(|chunk| self.generate_chunk(**chunk).to_resolved())
-                    .try_join()
-                    .await?,
-            )
-            .collect();
+            .map(|chunk| self.generate_chunk(**chunk).to_resolved())
+            .try_join()
+            .await?;
+        other_chunks.extend(extra_chunks.iter().copied());
+
+        referenced_output_assets.extend(extra_referenced_assets.await?.iter().copied());
 
         let Some(module) = ResolvedVc::try_sidecast(*evaluatable_assets_ref.last().unwrap()) else {
             bail!("module must be placeable in an ecmascript chunk");
@@ -462,6 +462,7 @@ impl ChunkingContext for NodeJsChunkingContext {
                 Vc::cell(other_chunks),
                 evaluatable_assets,
                 *module,
+                Vc::cell(referenced_output_assets),
                 module_graph,
                 *self,
             )
@@ -509,7 +510,7 @@ impl ChunkingContext for NodeJsChunkingContext {
             ))
         } else {
             let module = AsyncLoaderModule::new(module, Vc::upcast(self), availability_info);
-            Vc::upcast(module.as_chunk_item(module_graph, Vc::upcast(self)))
+            module.as_chunk_item(module_graph, Vc::upcast(self))
         })
     }
 

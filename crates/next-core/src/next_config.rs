@@ -14,7 +14,7 @@ use turbo_tasks_fetch::FetchClient;
 use turbo_tasks_fs::FileSystemPath;
 use turbopack::module_options::{
     ConditionItem, ConditionPath, LoaderRuleItem, WebpackRules,
-    module_options_context::{MdxTransformOptions, OptionWebpackConditions},
+    module_options_context::MdxTransformOptions,
 };
 use turbopack_core::{
     issue::{Issue, IssueExt, IssueStage, OptionStyledString, StyledString},
@@ -558,8 +558,6 @@ pub struct TurbopackConfig {
     /// This option has been replaced by `rules`.
     pub loaders: Option<JsonValue>,
     pub rules: Option<FxIndexMap<RcStr, RuleConfigCollection>>,
-    #[turbo_tasks(trace_ignore)]
-    pub conditions: Option<FxIndexMap<RcStr, ConfigConditionItem>>,
     pub resolve_alias: Option<FxIndexMap<RcStr, JsonValue>>,
     pub resolve_extensions: Option<Vec<RcStr>>,
     pub module_ids: Option<ModuleIds>,
@@ -736,23 +734,34 @@ pub enum MdxRsOptions {
 }
 
 #[turbo_tasks::value(shared, operation)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
-pub enum ReactCompilerMode {
+pub enum ReactCompilerCompilationMode {
+    #[default]
     Infer,
     Annotation,
     All,
 }
 
+#[turbo_tasks::value(shared, operation)]
+#[derive(Clone, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReactCompilerPanicThreshold {
+    #[default]
+    None,
+    CriticalErrors,
+    AllErrors,
+}
+
 /// Subset of react compiler options
 #[turbo_tasks::value(shared, operation)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReactCompilerOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub compilation_mode: Option<ReactCompilerMode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub panic_threshold: Option<RcStr>,
+    #[serde(default)]
+    pub compilation_mode: ReactCompilerCompilationMode,
+    #[serde(default)]
+    pub panic_threshold: ReactCompilerPanicThreshold,
 }
 
 #[derive(
@@ -876,6 +885,7 @@ pub struct ExperimentalConfig {
     turbopack_source_maps: Option<bool>,
     turbopack_tree_shaking: Option<bool>,
     turbopack_scope_hoisting: Option<bool>,
+    turbopack_import_type_bytes: Option<bool>,
     turbopack_use_system_tls_certs: Option<bool>,
     /// Disable automatic configuration of the sass loader.
     #[serde(default)]
@@ -1306,6 +1316,14 @@ impl NextConfig {
     }
 
     #[turbo_tasks::function]
+    pub async fn config_file_path(
+        &self,
+        project_path: FileSystemPath,
+    ) -> Result<Vc<FileSystemPath>> {
+        Ok(project_path.join(&self.config_file_name)?.cell())
+    }
+
+    #[turbo_tasks::function]
     pub fn bundle_pages_router_dependencies(&self) -> Vc<bool> {
         Vc::cell(self.bundle_pages_router_dependencies.unwrap_or_default())
     }
@@ -1328,11 +1346,6 @@ impl NextConfig {
     #[turbo_tasks::function]
     pub fn is_standalone(&self) -> Vc<bool> {
         Vc::cell(self.output == Some(OutputType::Standalone))
-    }
-
-    #[turbo_tasks::function]
-    pub fn ci_has_next_support(&self) -> Vc<bool> {
-        Vc::cell(self.env.contains_key("NOW_BUILDER"))
     }
 
     #[turbo_tasks::function]
@@ -1394,8 +1407,12 @@ impl NextConfig {
     }
 
     #[turbo_tasks::function]
-    pub async fn webpack_rules(&self, project_path: FileSystemPath) -> Result<Vc<WebpackRules>> {
-        let Some(turbo_rules) = self.turbopack.as_ref().and_then(|t| t.rules.as_ref()) else {
+    pub async fn webpack_rules(
+        self: Vc<Self>,
+        project_path: FileSystemPath,
+    ) -> Result<Vc<WebpackRules>> {
+        let this = self.await?;
+        let Some(turbo_rules) = this.turbopack.as_ref().and_then(|t| t.rules.as_ref()) else {
             return Ok(Vc::cell(Vec::new()));
         };
         if turbo_rules.is_empty() {
@@ -1418,7 +1435,6 @@ impl NextConfig {
                         .collect(),
                 )
             }
-            let config_file_path = || project_path.join(&self.config_file_name);
             for item in &rule_collection.0 {
                 match item {
                     RuleConfigCollectionItem::Shorthand(loaders) => {
@@ -1445,7 +1461,10 @@ impl NextConfig {
                         {
                             InvalidLoaderRuleRenameAsIssue {
                                 glob: glob.clone(),
-                                config_file_path: config_file_path()?,
+                                config_file_path: self
+                                    .config_file_path(project_path.clone())
+                                    .owned()
+                                    .await?,
                                 rename_as: rename_as.clone(),
                             }
                             .resolved_cell()
@@ -1460,7 +1479,10 @@ impl NextConfig {
                             } else {
                                 InvalidLoaderRuleConditionIssue {
                                     condition: condition.clone(),
-                                    config_file_path: config_file_path()?,
+                                    config_file_path: self
+                                        .config_file_path(project_path.clone())
+                                        .owned()
+                                        .await?,
                                 }
                                 .resolved_cell()
                                 .emit();
@@ -1482,24 +1504,6 @@ impl NextConfig {
             }
         }
         Ok(Vc::cell(rules))
-    }
-
-    #[turbo_tasks::function]
-    pub fn webpack_conditions(&self) -> Result<Vc<OptionWebpackConditions>> {
-        let Some(config_conditions) = self.turbopack.as_ref().and_then(|t| t.conditions.as_ref())
-        else {
-            return Ok(Vc::cell(None));
-        };
-
-        let conditions = config_conditions
-            .iter()
-            .map(|(k, v)| {
-                let item: Result<ConditionItem> = TryInto::<ConditionItem>::try_into((*v).clone());
-                item.map(|item| (k.clone(), item))
-            })
-            .collect::<Result<FxIndexMap<RcStr, ConditionItem>>>()?;
-
-        Ok(Vc::cell(Some(ResolvedVc::cell(conditions))))
     }
 
     #[turbo_tasks::function]
@@ -1629,18 +1633,12 @@ impl NextConfig {
     }
 
     #[turbo_tasks::function]
-    pub fn react_compiler(&self) -> Vc<OptionalReactCompilerOptions> {
+    pub fn react_compiler_options(&self) -> Vc<OptionalReactCompilerOptions> {
         let options = &self.experimental.react_compiler;
 
         let options = match options {
             Some(ReactCompilerOptionsOrBoolean::Boolean(true)) => {
-                OptionalReactCompilerOptions(Some(
-                    ReactCompilerOptions {
-                        compilation_mode: None,
-                        panic_threshold: None,
-                    }
-                    .resolved_cell(),
-                ))
+                OptionalReactCompilerOptions(Some(ReactCompilerOptions::default().resolved_cell()))
             }
             Some(ReactCompilerOptionsOrBoolean::Option(options)) => OptionalReactCompilerOptions(
                 Some(ReactCompilerOptions { ..options.clone() }.resolved_cell()),
@@ -1716,11 +1714,6 @@ impl NextConfig {
     #[turbo_tasks::function]
     pub fn enable_taint(&self) -> Vc<bool> {
         Vc::cell(self.experimental.taint.unwrap_or(false))
-    }
-
-    #[turbo_tasks::function]
-    pub fn enable_router_bfcache(&self) -> Vc<bool> {
-        Vc::cell(self.experimental.router_bfcache.unwrap_or(false))
     }
 
     #[turbo_tasks::function]
@@ -1837,6 +1830,15 @@ impl NextConfig {
             NextMode::Development => false,
             NextMode::Build => self.experimental.turbopack_scope_hoisting.unwrap_or(true),
         }))
+    }
+
+    #[turbo_tasks::function]
+    pub async fn turbopack_import_type_bytes(&self) -> Vc<bool> {
+        Vc::cell(
+            self.experimental
+                .turbopack_import_type_bytes
+                .unwrap_or(false),
+        )
     }
 
     #[turbo_tasks::function]

@@ -996,6 +996,7 @@
           (ReactSharedInternals.T = prevTransition);
       }
     };
+    exports.unstable_Activity = REACT_ACTIVITY_TYPE;
     exports.unstable_SuspenseList = REACT_SUSPENSE_LIST_TYPE;
     exports.unstable_ViewTransition = REACT_VIEW_TRANSITION_TYPE;
     exports.unstable_getCacheForType = function (resourceType) {
@@ -1024,5 +1025,5 @@
     exports.useMemo = function (create, deps) {
       return resolveDispatcher().useMemo(create, deps);
     };
-    exports.version = "19.2.0-experimental-2805f0ed-20250903";
+    exports.version = "19.2.0-experimental-1eca9a27-20250922";
   })();

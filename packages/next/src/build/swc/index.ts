@@ -10,7 +10,6 @@ import { patchIncorrectLockfile } from '../../lib/patch-incorrect-lockfile'
 import { downloadNativeNextSwc, downloadWasmSwc } from '../../lib/download-swc'
 import type {
   NextConfigComplete,
-  ReactCompilerOptions,
   TurbopackLoaderBuiltinCondition,
   TurbopackLoaderItem,
   TurbopackRuleCondition,
@@ -19,7 +18,6 @@ import type {
 } from '../../server/config-shared'
 import { isDeepStrictEqual } from 'util'
 import { type DefineEnvOptions, getDefineEnv } from '../define-env'
-import { getReactCompilerLoader } from '../get-babel-loader-config'
 import type {
   NapiPartialProjectOptions,
   NapiProjectOptions,
@@ -625,7 +623,6 @@ function bindingToApi(
         options.nextConfig,
         path.join(options.rootPath, options.projectPath)
       ),
-      jsConfig: JSON.stringify(options.jsConfig),
       env: rustifyEnv(options.env),
     }
   }
@@ -641,7 +638,6 @@ function bindingToApi(
           options.nextConfig,
           path.join(options.rootPath!, options.projectPath!)
         )),
-      jsConfig: options.jsConfig && JSON.stringify(options.jsConfig),
       env: options.env && rustifyEnv(options.env),
     }
   }
@@ -797,84 +793,12 @@ function bindingToApi(
     }
   }
 
-  /**
-   * Returns a new copy of next.js config object to avoid mutating the original.
-   *
-   * Also it does some augmentation to the configuration as well, for example set the
-   * turbopack's rules if `experimental.reactCompilerOptions` is set.
-   */
-  function augmentNextConfig(
-    originalNextConfig: NextConfigComplete,
-    projectPath: string
-  ): Record<string, any> {
-    let nextConfig = { ...(originalNextConfig as NextConfigComplete) }
-
-    const reactCompilerOptions = nextConfig.experimental?.reactCompiler
-
-    // It is not easy to set the rules inside of rust as resolving, and passing the context identical to the webpack
-    // config is bit hard, also we can reuse same codes between webpack config in here.
-    if (reactCompilerOptions) {
-      const options: ReactCompilerOptions =
-        typeof reactCompilerOptions === 'object' ? reactCompilerOptions : {}
-      const ruleKeys = ['*.ts', '*.js', '*.jsx', '*.tsx']
-      if (
-        Object.keys(nextConfig?.turbopack?.rules ?? {}).some((key) =>
-          ruleKeys.includes(key)
-        )
-      ) {
-        Log.warn(
-          "The React Compiler cannot be enabled automatically because 'turbopack.rules' contains " +
-            "a rule for '*.ts', '*.js', '*.jsx', and '*.tsx'. Remove this rule, or add " +
-            "'babel-loader' and 'babel-plugin-react-compiler' to the Turbopack configuration " +
-            'manually.'
-        )
-      } else {
-        nextConfig.turbopack ??= {}
-        nextConfig.turbopack.conditions ??= {}
-        nextConfig.turbopack.rules ??= {}
-
-        for (const key of ruleKeys) {
-          nextConfig.turbopack.conditions[`#reactCompiler/${key}`] = {
-            all: [
-              'browser',
-              { not: 'foreign' },
-              {
-                path: key,
-                content:
-                  options.compilationMode === 'annotation'
-                    ? /['"]use memo['"]/
-                    : !options.compilationMode ||
-                        options.compilationMode === 'infer'
-                      ? // Matches declaration or useXXX or </ (closing jsx) or /> (self closing jsx)
-                        /['"]use memo['"]|\Wuse[A-Z]|<\/|\/>/
-                      : undefined,
-              },
-            ],
-          }
-          nextConfig.turbopack.rules[`#reactCompiler/${key}`] = {
-            loaders: [
-              getReactCompilerLoader(
-                reactCompilerOptions,
-                projectPath,
-                nextConfig.dev,
-                /* isServer */ false,
-                /* reactCompilerExclude */ undefined
-              ),
-            ],
-          }
-        }
-      }
-    }
-
-    return nextConfig
-  }
-
   async function serializeNextConfig(
     nextConfig: NextConfigComplete,
     projectPath: string
   ): Promise<string> {
-    // Avoid mutating the existing `nextConfig` object. NOTE: This does a shallow clone.
-    let nextConfigSerializable = augmentNextConfig(nextConfig, projectPath)
+    // Avoid mutating the existing `nextConfig` object. NOTE: This is only a shallow clone.
+    let nextConfigSerializable: Record<string, any> = { ...nextConfig }
 
     nextConfigSerializable.generateBuildId =
       await nextConfigSerializable.generateBuildId?.()
@@ -946,17 +870,6 @@ function bindingToApi(
 
       if (turbopack.rules) {
         turbopack.rules = serializeTurbopackRules(turbopack.rules)
-      }
-
-      const conditions: (typeof nextConfig)['turbopack']['conditions'] =
-        turbopack.conditions
-      if (conditions) {
-        const serializedConditions: { [key: string]: SerializedRuleCondition } =
-          {}
-        for (const [key, value] of Object.entries(conditions)) {
-          serializedConditions[key] = serializeRuleCondition(value)
-        }
-        turbopack.conditions = serializedConditions
       }
 
       nextConfigSerializable.turbopack = turbopack
@@ -1291,7 +1204,10 @@ async function loadWasm(importPath = '') {
           '`turbo.createProject` is not supported by the wasm bindings.'
         )
       },
-      startTurbopackTraceServer(_traceFilePath: string): void {
+      startTurbopackTraceServer(
+        _traceFilePath: string,
+        _port: number | undefined
+      ): void {
         throw new Error(
           '`turbo.startTurbopackTraceServer` is not supported by the wasm bindings.'
         )
@@ -1485,11 +1401,14 @@ function loadNative(importPath?: string) {
       teardownTraceSubscriber: bindings.teardownTraceSubscriber,
       turbo: {
         createProject: bindingToApi(customBindings ?? bindings, false),
-        startTurbopackTraceServer(traceFilePath) {
+        startTurbopackTraceServer(traceFilePath, port) {
           Log.warn(
-            'Turbopack trace server started. View trace at https://trace.nextjs.org'
+            `Turbopack trace server started. View trace at https://trace.nextjs.org${port != null ? `?port=${port}` : ''}`
           )
-          ;(customBindings ?? bindings).startTurbopackTraceServer(traceFilePath)
+          ;(customBindings ?? bindings).startTurbopackTraceServer(
+            traceFilePath,
+            port
+          )
         },
       },
       mdx: {
