@@ -31,6 +31,12 @@ use swc_core::{
 use super::{cjs_finder::contains_cjs, import_analyzer::ImportMap};
 use crate::FxIndexMap;
 
+static NODE_MODULES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"node_modules[\\/]").unwrap());
+
+fn is_from_node_modules(filepath: &str) -> bool {
+    NODE_MODULES_RE.is_match(filepath)
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Config {
@@ -82,6 +88,7 @@ enum RSCErrorKind {
     NextRscErrServerImport((String, Span)),
     NextRscErrClientImport((String, Span)),
     NextRscErrClientDirective(Span),
+    NextRscErrServerDirective(Span),
     NextRscErrReactApi((String, Span)),
     NextRscErrErrorFileServerComponent(Span),
     NextRscErrClientMetadataExport((String, Span)),
@@ -281,6 +288,13 @@ fn report_error(app_dir: &Option<PathBuf>, filepath: &str, error_kind: RSCErrorK
                 .to_string(),
             vec![span],
         ),
+        RSCErrorKind::NextRscErrServerDirective(span) => (
+            "You're using the \"use server\" directive in the pages/ directory. That only works in the app/ directory (App Router). \
+             Read more: \
+             https://nextjs.org/docs/app/building-your-application/rendering/server-components"
+                .to_string(),
+            vec![span],
+        ),
         RSCErrorKind::NextRscErrServerImport((source, span)) => {
             let msg = match source.as_str() {
                 // If importing "react-dom/server", we should show a different error.
@@ -411,6 +425,32 @@ fn collect_top_level_directives_and_imports(
                                             filepath,
                                             RSCErrorKind::RedundantDirectives(expr_stmt.span),
                                         );
+                                    } else if !is_from_node_modules(filepath) {
+                                        // `use server` directive is only allowed in app directory.
+                                        // Skip this check for node_modules files as they may be
+                                        // external
+                                        // server action libraries used by app directory code.
+                                        let is_app_dir = app_dir
+                                            .as_ref()
+                                            .map(|app_dir| {
+                                                if let Some(app_dir) = app_dir.as_os_str().to_str()
+                                                {
+                                                    filepath.starts_with(app_dir)
+                                                } else {
+                                                    false
+                                                }
+                                            })
+                                            .unwrap_or_default();
+
+                                        if !is_app_dir {
+                                            report_error(
+                                                app_dir,
+                                                filepath,
+                                                RSCErrorKind::NextRscErrServerDirective(
+                                                    expr_stmt.span,
+                                                ),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -664,11 +704,6 @@ impl ReactServerComponentValidator {
         }
     }
 
-    fn is_from_node_modules(&self, filepath: &str) -> bool {
-        static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"node_modules[\\/]").unwrap());
-        RE.is_match(filepath)
-    }
-
     fn is_callee_next_dynamic(&self, callee: &Callee) -> bool {
         match callee {
             Callee::Expr(expr) => self.imports.is_import(expr, "next/dynamic", "default"),
@@ -715,8 +750,7 @@ impl ReactServerComponentValidator {
     }
 
     fn assert_server_graph(&self, imports: &[ModuleImports], module: &Module) {
-        // If the
-        if self.is_from_node_modules(&self.filepath) {
+        if is_from_node_modules(&self.filepath) {
             return;
         }
         for import in imports {
@@ -738,7 +772,7 @@ impl ReactServerComponentValidator {
     }
 
     fn assert_server_filename(&self, module: &Module) {
-        if self.is_from_node_modules(&self.filepath) {
+        if is_from_node_modules(&self.filepath) {
             return;
         }
         static RE: Lazy<Regex> =
@@ -768,7 +802,7 @@ impl ReactServerComponentValidator {
     }
 
     fn assert_client_graph(&self, imports: &[ModuleImports]) {
-        if self.is_from_node_modules(&self.filepath) {
+        if is_from_node_modules(&self.filepath) {
             return;
         }
         for import in imports {
@@ -801,7 +835,7 @@ impl ReactServerComponentValidator {
     }
 
     fn assert_invalid_api(&self, module: &Module, is_client_entry: bool) {
-        if self.is_from_node_modules(&self.filepath) {
+        if is_from_node_modules(&self.filepath) {
             return;
         }
         static RE: Lazy<Regex> =

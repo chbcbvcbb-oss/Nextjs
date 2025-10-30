@@ -448,14 +448,14 @@ fn react_server_components_typescript(input: PathBuf) {
         Syntax::Typescript(Default::default()),
         &|tr| {
             server_components(
-                FileName::Real(PathBuf::from("/some-project/src/some-file.js")).into(),
+                FileName::Real(PathBuf::from("/some-project/app/some-file.js")).into(),
                 Config::WithOptions(Options {
                     is_react_server_layer: true,
                     cache_components_enabled: false,
                     use_cache_enabled: false,
                 }),
                 tr.comments.as_ref().clone(),
-                None,
+                Some(PathBuf::from("/some-project/app")),
             )
         },
         &input,
@@ -476,14 +476,14 @@ fn react_server_components_fixture(input: PathBuf) {
         syntax(),
         &|tr| {
             server_components(
-                FileName::Real(PathBuf::from("/some-project/src/some-file.js")).into(),
+                FileName::Real(PathBuf::from("/some-project/app/some-file.js")).into(),
                 Config::WithOptions(Options {
                     is_react_server_layer,
                     cache_components_enabled: false,
                     use_cache_enabled: false,
                 }),
                 tr.comments.as_ref().clone(),
-                None,
+                Some(PathBuf::from("/some-project/app")),
             )
         },
         &input,

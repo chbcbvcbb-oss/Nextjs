@@ -100,14 +100,14 @@ fn react_server_components_errors(input: PathBuf) {
         syntax(),
         &|tr| {
             server_components(
-                FileName::Real(PathBuf::from("/some-project/src/page.js")).into(),
+                FileName::Real(PathBuf::from("/some-project/app/page.js")).into(),
                 Config::WithOptions(Options {
                     is_react_server_layer,
                     cache_components_enabled,
                     use_cache_enabled,
                 }),
                 tr.comments.as_ref().clone(),
-                None,
+                Some(PathBuf::from("/some-project/app")),
             )
         },
         &input,
@@ -159,7 +159,7 @@ fn react_server_actions_errors(input: PathBuf) {
                         use_cache_enabled: true,
                     }),
                     tr.comments.as_ref().clone(),
-                    None,
+                    Some(PathBuf::from("/app")),
                 ),
                 server_actions(
                     &FileName::Real("/app/item.js".into()),
@@ -223,7 +223,7 @@ fn use_cache_not_allowed(input: PathBuf) {
                         use_cache_enabled: false,
                     }),
                     tr.comments.as_ref().clone(),
-                    None,
+                    Some(PathBuf::from("/app")),
                 ),
                 server_actions(
                     &FileName::Real("/app/item.js".into()),

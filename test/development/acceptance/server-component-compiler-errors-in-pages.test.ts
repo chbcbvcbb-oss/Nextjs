@@ -380,6 +380,68 @@ describe('Error Overlay for server components compiler errors in pages', () => {
     }
   })
 
+  test("using 'use server' directive in pages", async () => {
+    await using sandbox = await createSandbox(next, initialFiles)
+    const { session } = sandbox
+
+    await session.patch(
+      'components/Comp.js',
+      outdent`
+        'use server'
+
+        export default function Comp() {
+          return <p>hello world</p>
+        }
+      `
+    )
+
+    await session.assertHasRedbox()
+    await expect(session.getRedboxSource()).resolves.toMatch(
+      /That only works in the app\/ directory \(App Router\)/
+    )
+
+    if (process.env.IS_TURBOPACK_TEST) {
+      expect(next.normalizeTestDirContent(await session.getRedboxSource()))
+        .toMatchInlineSnapshot(`
+       "./components/Comp.js (1:1)
+       Ecmascript file had an error
+       > 1 | 'use server'
+           | ^^^^^^^^^^^^
+         2 |
+         3 | export default function Comp() {
+         4 |   return <p>hello world</p>
+
+       You're using the "use server" directive in the pages/ directory. That only works in the app/ directory (App Router). Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+
+       Import traces:
+         Browser:
+           ./components/Comp.js
+           ./pages/index.js
+
+         SSR:
+           ./components/Comp.js
+           ./pages/index.js"
+      `)
+    } else {
+      expect(next.normalizeTestDirContent(await session.getRedboxSource()))
+        .toMatchInlineSnapshot(`
+       "./components/Comp.js
+       Error:   x You're using the "use server" directive in the pages/ directory. That only works in the app/ directory (App Router). Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+          ,-[1:1]
+        1 | 'use server'
+          : ^^^^^^^^^^^^
+        2 | 
+        3 | export default function Comp() {
+        4 |   return <p>hello world</p>
+          \`----
+
+       Import trace for requested module:
+       ./components/Comp.js
+       ./pages/index.js"
+      `)
+    }
+  })
+
   describe("importing 'next/cache' APIs in pages", () => {
     test.each([
       'revalidatePath',
