@@ -10,10 +10,10 @@ use turbopack_core::{
 
 use super::asset::EcmascriptModulePartAsset;
 use crate::{
-    EcmascriptAnalyzable,
+    EcmascriptAnalyzableExt,
     chunk::{
         EcmascriptChunkItem, EcmascriptChunkItemContent, EcmascriptChunkItemOptions,
-        EcmascriptChunkPlaceable, EcmascriptChunkType,
+        EcmascriptChunkPlaceable, EcmascriptChunkType, item::RewriteSourcePath,
     },
     references::async_module::AsyncModuleOptions,
     runtime_functions::{TURBOPACK_EXPORT_NAMESPACE, TURBOPACK_IMPORT},
@@ -54,7 +54,6 @@ impl EcmascriptChunkItem for EcmascriptModulePartChunkItem {
         Ok(EcmascriptChunkItemContent::new(
             content,
             *self.chunking_context,
-            *self.module.await?.full_module.await?.options,
             async_module_options,
         ))
     }
@@ -69,7 +68,7 @@ impl ChunkItem for EcmascriptModulePartChunkItem {
 
     #[turbo_tasks::function]
     fn chunking_context(&self) -> Vc<Box<dyn ChunkingContext>> {
-        *ResolvedVc::upcast(self.chunking_context)
+        *self.chunking_context
     }
 
     #[turbo_tasks::function]
@@ -167,10 +166,9 @@ impl EcmascriptChunkItem for SideEffectsModuleChunkItem {
         Ok(EcmascriptChunkItemContent {
             inner_code: code,
             source_map: None,
-            rewrite_source_path: None,
+            rewrite_source_path: RewriteSourcePath::None,
             options: EcmascriptChunkItemOptions {
                 strict: true,
-                exports: true,
                 async_module: if has_top_level_await {
                     Some(AsyncModuleOptions {
                         has_top_level_await: true,

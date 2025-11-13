@@ -34,7 +34,7 @@ describe('browser-chunks', () => {
 
   it('must not bundle any dev overlay into browser chunks', () => {
     const devOverlaySources = sources.filter((source) => {
-      return source.includes('next-devtools/dev-overlay')
+      return source.includes('next-devtools')
     })
 
     if (devOverlaySources.length > 0) {
@@ -45,6 +45,20 @@ describe('browser-chunks', () => {
 
       throw new Error(
         'Did not expect any dev overlay modules in browser chunks.\n' + message
+      )
+    }
+  })
+
+  it('must not include heavy dependencies into browser chunks', () => {
+    const heavyDependencies = sources.filter((source) => {
+      return source.includes('next/dist/compiled/safe-stable-stringify')
+    })
+
+    if (heavyDependencies.length > 0) {
+      const message = `Found the following heavy dependencies:\n  ${heavyDependencies.join('\n  ')}`
+
+      throw new Error(
+        'Did not expect any heavy dependencies in browser chunks.\n' + message
       )
     }
   })

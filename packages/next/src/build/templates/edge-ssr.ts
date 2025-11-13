@@ -13,9 +13,6 @@ declare const incrementalCacheHandler: any
 // OPTIONAL_IMPORT:* as userland500Page
 // OPTIONAL_IMPORT:incrementalCacheHandler
 
-// TODO: re-enable this once we've refactored to use implicit matches
-// const renderToHTML = undefined
-
 import RouteModule, {
   type PagesRouteHandlerContext,
 } from '../../server/route-modules/pages/module'
@@ -28,6 +25,7 @@ import type RenderResult from '../../server/render-result'
 import type { RenderResultMetadata } from '../../server/render-result'
 import { getTracer, SpanKind, type Span } from '../../server/lib/trace/tracer'
 import { BaseServerSpan } from '../../server/lib/trace/constants'
+import { HTML_CONTENT_TYPE_HEADER } from '../../lib/constants'
 
 // injected by the loader afterwards.
 declare const nextConfig: NextConfigComplete
@@ -40,7 +38,7 @@ declare const user500RouteModuleOptions: any
 // INJECT:user500RouteModuleOptions
 
 // Initialize the cache handlers interface.
-initializeCacheHandlers()
+initializeCacheHandlers(nextConfig.cacheMaxMemorySize)
 
 // expose this for the route-module
 ;(globalThis as any).nextConfig = nextConfig
@@ -143,10 +141,7 @@ async function requestHandler(
       ComponentMod: pageMod,
       pageConfig: pageMod.pageConfig,
       routeModule: pageMod.routeModule,
-      strictNextHead: nextConfig.experimental.strictNextHead ?? true,
-      canonicalBase: nextConfig.amp.canonicalBase || '',
       previewProps: prerenderManifest.preview,
-      ampOptimizerConfig: nextConfig.experimental.amp?.optimizer,
       basePath: nextConfig.basePath,
       assetPrefix: nextConfig.assetPrefix,
       images: nextConfig.images,
@@ -158,12 +153,6 @@ async function requestHandler(
       distDir: '',
       crossOrigin: nextConfig.crossOrigin ? nextConfig.crossOrigin : undefined,
       largePageDataBytes: nextConfig.experimental.largePageDataBytes,
-      // Only the `publicRuntimeConfig` key is exposed to the client side
-      // It'll be rendered as part of __NEXT_DATA__ on the client side
-      runtimeConfig:
-        Object.keys(nextConfig.publicRuntimeConfig).length > 0
-          ? nextConfig.publicRuntimeConfig
-          : undefined,
 
       isExperimentalCompile: nextConfig.experimental.isExperimentalCompile,
       // `htmlLimitedBots` is passed to server as serialized config in string format
@@ -195,7 +184,7 @@ async function requestHandler(
     const headers = new Headers()
 
     // Set content type
-    const contentType = result.contentType || 'text/html; charset=utf-8'
+    const contentType = result.contentType || HTML_CONTENT_TYPE_HEADER
     headers.set('Content-Type', contentType)
 
     // Add metadata headers
@@ -299,7 +288,7 @@ async function requestHandler(
             })
             span.updateName(name)
           } else {
-            span.updateName(`${req.method} ${relativeUrl}`)
+            span.updateName(`${req.method} ${srcPage}`)
           }
         })
 
@@ -342,13 +331,11 @@ async function requestHandler(
 
   const tracer = getTracer()
 
-  // TODO: activeSpan code path is for when wrapped by
-  // next-server can be removed when this is no longer used
   return tracer.withPropagatedContext(req.headers, () =>
     tracer.trace(
       BaseServerSpan.handleRequest,
       {
-        spanName: `${req.method} ${relativeUrl}`,
+        spanName: `${req.method} ${srcPage}`,
         kind: SpanKind.SERVER,
         attributes: {
           'http.method': req.method,

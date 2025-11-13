@@ -29,7 +29,8 @@ pub use self::{
     },
     chunking_context::{
         ChunkGroupResult, ChunkGroupType, ChunkingConfig, ChunkingConfigs, ChunkingContext,
-        ChunkingContextExt, EntryChunkGroupResult, MangleType, MinifyType, SourceMapsType,
+        ChunkingContextExt, EntryChunkGroupResult, MangleType, MinifyType, SourceMapSourceType,
+        SourceMapsType,
     },
     data::{ChunkData, ChunkDataOption, ChunksData},
     evaluate::{EvaluatableAsset, EvaluatableAssetExt, EvaluatableAssets},
@@ -243,6 +244,14 @@ pub struct OutputChunkRuntimeInfo {
     pub placeholder_for_future_extensions: (),
 }
 
+#[turbo_tasks::value_impl]
+impl OutputChunkRuntimeInfo {
+    #[turbo_tasks::function]
+    pub fn empty() -> Vc<Self> {
+        Self::default().cell()
+    }
+}
+
 #[turbo_tasks::value_trait]
 pub trait OutputChunk: Asset {
     #[turbo_tasks::function]
@@ -292,6 +301,51 @@ pub enum ChunkingType {
     },
     // Module not placed in chunk group, but its references are still followed.
     Traced,
+}
+
+impl Display for ChunkingType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChunkingType::Parallel {
+                inherit_async,
+                hoisted,
+            } => {
+                write!(
+                    f,
+                    "Parallel(inherit_async: {inherit_async}, hoisted: {hoisted})",
+                )
+            }
+            ChunkingType::Async => write!(f, "Async"),
+            ChunkingType::Isolated {
+                _ty,
+                merge_tag: Some(merge_tag),
+            } => {
+                write!(f, "Isolated(merge_tag: {merge_tag})")
+            }
+            ChunkingType::Isolated {
+                _ty,
+                merge_tag: None,
+            } => {
+                write!(f, "Isolated")
+            }
+            ChunkingType::Shared {
+                inherit_async,
+                merge_tag: Some(merge_tag),
+            } => {
+                write!(
+                    f,
+                    "Shared(inherit_async: {inherit_async}, merge_tag: {merge_tag})"
+                )
+            }
+            ChunkingType::Shared {
+                inherit_async,
+                merge_tag: None,
+            } => {
+                write!(f, "Shared(inherit_async: {inherit_async})")
+            }
+            ChunkingType::Traced => write!(f, "Traced"),
+        }
+    }
 }
 
 impl ChunkingType {
@@ -374,8 +428,8 @@ pub trait ChunkableModuleReference: ModuleReference + ValueToString {
 }
 
 pub struct ChunkGroupContent {
-    pub chunkable_items: FxIndexSet<ChunkableModuleOrBatch>,
-    pub batch_groups: FxIndexSet<ResolvedVc<ModuleBatchGroup>>,
+    pub chunkable_items: Vec<ChunkableModuleOrBatch>,
+    pub batch_groups: Vec<ResolvedVc<ModuleBatchGroup>>,
     pub async_modules: FxIndexSet<ResolvedVc<Box<dyn ChunkableModule>>>,
     pub traced_modules: FxIndexSet<ResolvedVc<Box<dyn Module>>>,
     pub availability_info: AvailabilityInfo,
@@ -428,7 +482,6 @@ pub trait ChunkType: ValueToString {
         chunking_context: Vc<Box<dyn ChunkingContext>>,
         chunk_items: Vec<ChunkItemOrBatchWithAsyncModuleInfo>,
         batch_groups: Vec<ResolvedVc<ChunkItemBatchGroup>>,
-        referenced_output_assets: Vc<OutputAssets>,
     ) -> Vc<Box<dyn Chunk>>;
 
     #[turbo_tasks::function]
@@ -487,7 +540,7 @@ where
 {
     /// Returns the module id of this chunk item.
     fn id(self: Vc<Self>) -> Vc<ModuleId> {
-        let chunk_item = Vc::upcast(self);
+        let chunk_item = Vc::upcast_non_strict(self);
         chunk_item.chunking_context().chunk_item_id(chunk_item)
     }
 }
@@ -507,7 +560,7 @@ where
         self: Vc<Self>,
         chunking_context: Vc<Box<dyn ChunkingContext>>,
     ) -> Vc<ModuleId> {
-        chunking_context.chunk_item_id_from_module(Vc::upcast(self))
+        chunking_context.chunk_item_id_from_module(Vc::upcast_non_strict(self))
     }
 }
 

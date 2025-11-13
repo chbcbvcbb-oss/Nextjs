@@ -43,15 +43,10 @@ pub async fn node_evaluate_asset_context(
         ImportMap::empty()
     };
     import_map.insert_wildcard_alias(
-        "@vercel/turbopack-node/",
+        rcstr!("@vercel/turbopack-node/"),
         ImportMapping::PrimaryAlternative(
             rcstr!("./*"),
-            Some(
-                turbopack_node::embed_js::embed_fs()
-                    .root()
-                    .await?
-                    .clone_value(),
-            ),
+            Some(turbopack_node::embed_js::embed_fs().root().owned().await?),
         )
         .resolved_cell(),
     );
@@ -71,8 +66,8 @@ pub async fn node_evaluate_asset_context(
                 .project_path()
                 .await?
                 .root()
-                .await?
-                .clone_value(),
+                .owned()
+                .await?,
         ),
         enable_node_externals: true,
         enable_node_native_modules: true,

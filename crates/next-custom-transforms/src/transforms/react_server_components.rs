@@ -51,7 +51,7 @@ impl Config {
 #[serde(rename_all = "camelCase")]
 pub struct Options {
     pub is_react_server_layer: bool,
-    pub dynamic_io_enabled: bool,
+    pub cache_components_enabled: bool,
     pub use_cache_enabled: bool,
 }
 
@@ -61,12 +61,11 @@ pub struct Options {
 /// same purpose, so does not run this transform.
 struct ReactServerComponents<C: Comments> {
     is_react_server_layer: bool,
-    dynamic_io_enabled: bool,
+    cache_components_enabled: bool,
     use_cache_enabled: bool,
     filepath: String,
     app_dir: Option<PathBuf>,
     comments: C,
-    directive_import_collection: Option<(bool, bool, RcVec<ModuleImports>, RcVec<Atom>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,10 +74,17 @@ struct ModuleImports {
     specifiers: Vec<(Atom, Span)>,
 }
 
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModuleDirective {
+    UseClient,
+    UseServer,
+    UseCache,
+}
+
 enum RSCErrorKind {
-    /// When `use client` and `use server` are in the same file.
-    /// It's not possible to have both directives in the same file.
-    RedundantDirectives(Span),
+    UseClientWithUseServer(Span),
+    UseClientWithUseCache(Span),
     NextRscErrServerImport((String, Span)),
     NextRscErrClientImport((String, Span)),
     NextRscErrClientDirective(Span),
@@ -94,14 +100,14 @@ enum RSCErrorKind {
 
 #[derive(Clone, Debug, Copy)]
 enum NextConfigProperty {
-    DynamicIo,
+    CacheComponents,
     UseCache,
 }
 
 impl Display for NextConfigProperty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NextConfigProperty::DynamicIo => write!(f, "experimental.dynamicIO"),
+            NextConfigProperty::CacheComponents => write!(f, "cacheComponents"),
             NextConfigProperty::UseCache => write!(f, "experimental.useCache"),
         }
     }
@@ -120,20 +126,16 @@ impl<C: Comments> VisitMut for ReactServerComponents<C> {
         // Run the validator first to assert, collect directives and imports.
         let mut validator = ReactServerComponentValidator::new(
             self.is_react_server_layer,
-            self.dynamic_io_enabled,
+            self.cache_components_enabled,
             self.use_cache_enabled,
             self.filepath.clone(),
             self.app_dir.clone(),
         );
 
         module.visit_with(&mut validator);
-        self.directive_import_collection = validator.directive_import_collection;
 
-        let is_client_entry = self
-            .directive_import_collection
-            .as_ref()
-            .expect("directive_import_collection must be set")
-            .0;
+        let is_client_entry = validator.module_directive == Some(ModuleDirective::UseClient);
+        let export_names = validator.export_names;
 
         self.remove_top_level_directive(module);
 
@@ -141,11 +143,11 @@ impl<C: Comments> VisitMut for ReactServerComponents<C> {
 
         if self.is_react_server_layer {
             if is_client_entry {
-                self.to_module_ref(module, is_cjs);
+                self.to_module_ref(module, is_cjs, &export_names);
                 return;
             }
         } else if is_client_entry {
-            self.prepend_comment_node(module, is_cjs);
+            self.prepend_comment_node(module, is_cjs, &export_names);
         }
         module.visit_mut_children_with(self)
     }
@@ -154,7 +156,7 @@ impl<C: Comments> VisitMut for ReactServerComponents<C> {
 impl<C: Comments> ReactServerComponents<C> {
     /// removes specific directive from the AST.
     fn remove_top_level_directive(&mut self, module: &mut Module) {
-        let _ = &module.body.retain(|item| {
+        module.body.retain(|item| {
             if let ModuleItem::Stmt(stmt) = item {
                 if let Some(expr_stmt) = stmt.as_expr() {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &*expr_stmt.expr {
@@ -171,7 +173,7 @@ impl<C: Comments> ReactServerComponents<C> {
 
     // Convert the client module to the module reference code and add a special
     // comment to the top of the file.
-    fn to_module_ref(&self, module: &mut Module, is_cjs: bool) {
+    fn to_module_ref(&self, module: &mut Module, is_cjs: bool, export_names: &[Atom]) {
         // Clear all the statements and module declarations.
         module.body.clear();
 
@@ -229,16 +231,10 @@ impl<C: Comments> ReactServerComponents<C> {
             .into_iter(),
         );
 
-        self.prepend_comment_node(module, is_cjs);
+        self.prepend_comment_node(module, is_cjs, export_names);
     }
 
-    fn prepend_comment_node(&self, module: &Module, is_cjs: bool) {
-        let export_names = &self
-            .directive_import_collection
-            .as_ref()
-            .expect("directive_import_collection must be set")
-            .3;
-
+    fn prepend_comment_node(&self, module: &Module, is_cjs: bool, export_names: &[Atom]) {
         // Prepend a special comment to the top of the file that contains
         // module export names and the detected module type.
         self.comments.add_leading(
@@ -269,8 +265,14 @@ fn join_atoms(atoms: &[Atom]) -> String {
 /// errors.
 fn report_error(app_dir: &Option<PathBuf>, filepath: &str, error_kind: RSCErrorKind) {
     let (msg, spans) = match error_kind {
-        RSCErrorKind::RedundantDirectives(span) => (
-            "It's not possible to have both `use client` and `use server` directives in the \
+        RSCErrorKind::UseClientWithUseServer(span) => (
+            "It's not possible to have both \"use client\" and \"use server\" directives in the \
+             same file."
+                .to_string(),
+            vec![span],
+        ),
+        RSCErrorKind::UseClientWithUseCache(span) => (
+            "It's not possible to have both \"use client\" and \"use cache\" directives in the \
              same file."
                 .to_string(),
             vec![span],
@@ -359,16 +361,17 @@ fn report_error(app_dir: &Option<PathBuf>, filepath: &str, error_kind: RSCErrorK
     HANDLER.with(|handler| handler.struct_span_err(spans, msg.as_str()).emit())
 }
 
-/// Collects top level directives and imports
-fn collect_top_level_directives_and_imports(
+/// Collects module directive, imports, and exports from top-level statements
+fn collect_module_info(
     app_dir: &Option<PathBuf>,
     filepath: &str,
     module: &Module,
-) -> (bool, bool, Vec<ModuleImports>, Vec<Atom>) {
+) -> (Option<ModuleDirective>, Vec<ModuleImports>, Vec<Atom>) {
     let mut imports: Vec<ModuleImports> = vec![];
     let mut finished_directives = false;
     let mut is_client_entry = false;
     let mut is_action_file = false;
+    let mut is_cache_file = false;
 
     let mut export_names = vec![];
 
@@ -392,7 +395,15 @@ fn collect_top_level_directives_and_imports(
                                             report_error(
                                                 app_dir,
                                                 filepath,
-                                                RSCErrorKind::RedundantDirectives(expr_stmt.span),
+                                                RSCErrorKind::UseClientWithUseServer(
+                                                    expr_stmt.span,
+                                                ),
+                                            );
+                                        } else if is_cache_file {
+                                            report_error(
+                                                app_dir,
+                                                filepath,
+                                                RSCErrorKind::UseClientWithUseCache(expr_stmt.span),
                                             );
                                         }
                                     } else {
@@ -409,7 +420,20 @@ fn collect_top_level_directives_and_imports(
                                         report_error(
                                             app_dir,
                                             filepath,
-                                            RSCErrorKind::RedundantDirectives(expr_stmt.span),
+                                            RSCErrorKind::UseClientWithUseServer(expr_stmt.span),
+                                        );
+                                    }
+                                } else if (&**value == "use cache"
+                                    || value.starts_with("use cache: "))
+                                    && !finished_directives
+                                {
+                                    is_cache_file = true;
+
+                                    if is_client_entry {
+                                        report_error(
+                                            app_dir,
+                                            filepath,
+                                            RSCErrorKind::UseClientWithUseCache(expr_stmt.span),
                                         );
                                     }
                                 }
@@ -541,13 +565,23 @@ fn collect_top_level_directives_and_imports(
         }
     });
 
-    (is_client_entry, is_action_file, imports, export_names)
+    let directive = if is_client_entry {
+        Some(ModuleDirective::UseClient)
+    } else if is_action_file {
+        Some(ModuleDirective::UseServer)
+    } else if is_cache_file {
+        Some(ModuleDirective::UseCache)
+    } else {
+        None
+    };
+
+    (directive, imports, export_names)
 }
 
 /// A visitor to assert given module file is a valid React server component.
 struct ReactServerComponentValidator {
     is_react_server_layer: bool,
-    dynamic_io_enabled: bool,
+    cache_components_enabled: bool,
     use_cache_enabled: bool,
     filepath: String,
     app_dir: Option<PathBuf>,
@@ -556,28 +590,27 @@ struct ReactServerComponentValidator {
     deprecated_apis_mapping: FxHashMap<&'static str, Vec<&'static str>>,
     invalid_client_imports: Vec<Atom>,
     invalid_client_lib_apis_mapping: FxHashMap<&'static str, Vec<&'static str>>,
-    pub directive_import_collection: Option<(bool, bool, RcVec<ModuleImports>, RcVec<Atom>)>,
+    pub module_directive: Option<ModuleDirective>,
+    pub export_names: Vec<Atom>,
     imports: ImportMap,
 }
-
-// A type to workaround a clippy warning.
-type RcVec<T> = Rc<Vec<T>>;
 
 impl ReactServerComponentValidator {
     pub fn new(
         is_react_server_layer: bool,
-        dynamic_io_enabled: bool,
+        cache_components_enabled: bool,
         use_cache_enabled: bool,
         filename: String,
         app_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             is_react_server_layer,
-            dynamic_io_enabled,
+            cache_components_enabled,
             use_cache_enabled,
             filepath: filename,
             app_dir,
-            directive_import_collection: None,
+            module_directive: None,
+            export_names: vec![],
             // react -> [apis]
             // react-dom -> [apis]
             // next/navigation -> [apis]
@@ -624,6 +657,7 @@ impl ReactServerComponentValidator {
                         "useRouter",
                         "useServerInsertedHTML",
                         "ServerInsertedHTMLContext",
+                        "unstable_isUnrecognizedActionError",
                     ],
                 ),
                 ("next/link", vec!["useLinkStatus"]),
@@ -637,20 +671,24 @@ impl ReactServerComponentValidator {
                 Atom::from("next/router"),
             ],
 
-            invalid_client_imports: vec![Atom::from("server-only"), Atom::from("next/headers")],
+            invalid_client_imports: vec![
+                Atom::from("server-only"),
+                Atom::from("next/headers"),
+                Atom::from("next/root-params"),
+            ],
 
             invalid_client_lib_apis_mapping: FxHashMap::from_iter([
-                ("next/server", vec!["after", "unstable_rootParams"]),
+                ("next/server", vec!["after"]),
                 (
                     "next/cache",
                     vec![
                         "revalidatePath",
                         "revalidateTag",
                         // "unstable_cache", // useless in client, but doesn't technically error
+                        "cacheLife",
                         "unstable_cacheLife",
+                        "cacheTag",
                         "unstable_cacheTag",
-                        "unstable_expirePath",
-                        "unstable_expireTag",
                         // "unstable_noStore" // no-op in client, but allowed for legacy reasons
                     ],
                 ),
@@ -800,10 +838,10 @@ impl ReactServerComponentValidator {
             return;
         }
         static RE: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r"[\\/](page|layout)\.(ts|js)x?$").unwrap());
-        let is_layout_or_page = RE.is_match(&self.filepath);
+            Lazy::new(|| Regex::new(r"[\\/](page|layout|route)\.(ts|js)x?$").unwrap());
+        let is_app_entry = RE.is_match(&self.filepath);
 
-        if is_layout_or_page {
+        if is_app_entry {
             let mut possibly_invalid_exports: FxIndexMap<Atom, (InvalidExportKind, Span)> =
                 FxIndexMap::default();
 
@@ -818,12 +856,12 @@ impl ReactServerComponentValidator {
                             .insert(export_name.clone(), (InvalidExportKind::Metadata, *span));
                     }
                     "runtime" => {
-                        if self.dynamic_io_enabled {
+                        if self.cache_components_enabled {
                             possibly_invalid_exports.insert(
                                 export_name.clone(),
                                 (
                                     InvalidExportKind::RouteSegmentConfig(
-                                        NextConfigProperty::DynamicIo,
+                                        NextConfigProperty::CacheComponents,
                                     ),
                                     *span,
                                 ),
@@ -840,13 +878,14 @@ impl ReactServerComponentValidator {
                             );
                         }
                     }
-                    "dynamicParams" | "dynamic" | "fetchCache" | "revalidate" => {
-                        if self.dynamic_io_enabled {
+                    "dynamicParams" | "dynamic" | "fetchCache" | "revalidate"
+                    | "experimental_ppr" => {
+                        if self.cache_components_enabled {
                             possibly_invalid_exports.insert(
                                 export_name.clone(),
                                 (
                                     InvalidExportKind::RouteSegmentConfig(
-                                        NextConfigProperty::DynamicIo,
+                                        NextConfigProperty::CacheComponents,
                                     ),
                                     *span,
                                 ),
@@ -1005,20 +1044,15 @@ impl Visit for ReactServerComponentValidator {
     fn visit_module(&mut self, module: &Module) {
         self.imports = ImportMap::analyze(module);
 
-        let (is_client_entry, is_action_file, imports, export_names) =
-            collect_top_level_directives_and_imports(&self.app_dir, &self.filepath, module);
+        let (directive, imports, export_names) =
+            collect_module_info(&self.app_dir, &self.filepath, module);
         let imports = Rc::new(imports);
-        let export_names = Rc::new(export_names);
 
-        self.directive_import_collection = Some((
-            is_client_entry,
-            is_action_file,
-            imports.clone(),
-            export_names,
-        ));
+        self.module_directive = directive;
+        self.export_names = export_names;
 
         if self.is_react_server_layer {
-            if is_client_entry {
+            if directive == Some(ModuleDirective::UseClient) {
                 return;
             } else {
                 // Only assert server graph if file's bundle target is "server", e.g.
@@ -1029,11 +1063,13 @@ impl Visit for ReactServerComponentValidator {
                 self.assert_server_graph(&imports, module);
             }
         } else {
-            // Only assert client graph if the file is not an action file,
+            // Only assert client graph if the file is not an action or cache file,
             // and bundle target is "client" e.g.
             // * client components pages
             // * pages bundles on browser layer
-            if !is_action_file {
+            if directive != Some(ModuleDirective::UseServer)
+                && directive != Some(ModuleDirective::UseCache)
+            {
                 self.assert_client_graph(&imports);
                 self.assert_invalid_api(module, true);
             }
@@ -1058,8 +1094,8 @@ pub fn server_components_assert(
         Config::WithOptions(x) => x.is_react_server_layer,
         _ => false,
     };
-    let dynamic_io_enabled: bool = match &config {
-        Config::WithOptions(x) => x.dynamic_io_enabled,
+    let cache_components_enabled: bool = match &config {
+        Config::WithOptions(x) => x.cache_components_enabled,
         _ => false,
     };
     let use_cache_enabled: bool = match &config {
@@ -1072,7 +1108,7 @@ pub fn server_components_assert(
     };
     ReactServerComponentValidator::new(
         is_react_server_layer,
-        dynamic_io_enabled,
+        cache_components_enabled,
         use_cache_enabled,
         filename,
         app_dir,
@@ -1091,8 +1127,8 @@ pub fn server_components<C: Comments>(
         Config::WithOptions(x) => x.is_react_server_layer,
         _ => false,
     };
-    let dynamic_io_enabled: bool = match &config {
-        Config::WithOptions(x) => x.dynamic_io_enabled,
+    let cache_components_enabled: bool = match &config {
+        Config::WithOptions(x) => x.cache_components_enabled,
         _ => false,
     };
     let use_cache_enabled: bool = match &config {
@@ -1101,7 +1137,7 @@ pub fn server_components<C: Comments>(
     };
     visit_mut_pass(ReactServerComponents {
         is_react_server_layer,
-        dynamic_io_enabled,
+        cache_components_enabled,
         use_cache_enabled,
         comments,
         filepath: match &*filename {
@@ -1109,6 +1145,5 @@ pub fn server_components<C: Comments>(
             _ => filename.to_string(),
         },
         app_dir,
-        directive_import_collection: None,
     })
 }
