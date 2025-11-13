@@ -92,6 +92,12 @@ async fn apply_module_type(
             postprocess,
             options,
         }
+        | ModuleType::EcmascriptExtensionless {
+            preprocess,
+            main,
+            postprocess,
+            options,
+        }
         | ModuleType::Typescript {
             preprocess,
             main,
@@ -135,6 +141,9 @@ async fn apply_module_type(
                 ModuleType::Ecmascript { .. } => {
                     builder = builder.with_type(EcmascriptModuleAssetType::Ecmascript)
                 }
+                ModuleType::EcmascriptExtensionless { .. } => {
+                    builder = builder.with_type(EcmascriptModuleAssetType::EcmascriptExtensionless)
+                }
                 ModuleType::Typescript {
                     tsx, analyze_types, ..
                 } => {
@@ -157,8 +166,12 @@ async fn apply_module_type(
             if runtime_code {
                 ResolvedVc::upcast(module)
             } else {
-                if matches!(&part, Some(ModulePart::Evaluation)) {
-                    // Skip the evaluation part if the module is marked as side effect free.
+                let options_value = options.await?;
+                if options_value.tree_shaking_mode.is_some()
+                    && matches!(&part, Some(ModulePart::Evaluation))
+                {
+                    // If we are tree shaking, skip the evaluation part if the module is marked as
+                    // side effect free.
                     let side_effect_free_packages = module_asset_context
                         .side_effect_free_packages()
                         .resolve()
@@ -172,7 +185,6 @@ async fn apply_module_type(
                     }
                 }
 
-                let options_value = options.await?;
                 match options_value.tree_shaking_mode {
                     Some(TreeShakingMode::ModuleFragments) => {
                         Vc::upcast(EcmascriptModulePartAsset::select_part(
@@ -262,12 +274,16 @@ async fn apply_module_type(
             .to_resolved()
             .await?,
         ),
-        ModuleType::StaticUrlJs => {
-            ResolvedVc::upcast(StaticUrlJsModule::new(*source).to_resolved().await?)
-        }
-        ModuleType::StaticUrlCss => {
-            ResolvedVc::upcast(StaticUrlCssModule::new(*source).to_resolved().await?)
-        }
+        ModuleType::StaticUrlJs { tag } => ResolvedVc::upcast(
+            StaticUrlJsModule::new(*source, tag.clone())
+                .to_resolved()
+                .await?,
+        ),
+        ModuleType::StaticUrlCss { tag } => ResolvedVc::upcast(
+            StaticUrlCssModule::new(*source, tag.clone())
+                .to_resolved()
+                .await?,
+        ),
         ModuleType::InlinedBytesJs => {
             ResolvedVc::upcast(InlinedBytesJsModule::new(*source).to_resolved().await?)
         }
@@ -375,8 +391,9 @@ impl ModuleAssetContext {
         })
     }
 
+    /// Doesn't replace external resolve results with a CachedExternalModule.
     #[turbo_tasks::function]
-    fn new_without_replace_externals(
+    pub fn new_without_replace_externals(
         transitions: ResolvedVc<TransitionOptions>,
         compile_time_info: ResolvedVc<CompileTimeInfo>,
         module_options_context: ResolvedVc<ModuleOptionsContext>,
@@ -477,10 +494,10 @@ async fn process_default(
         reference_type = display(&reference_type)
     );
     if !span.is_disabled() {
-        // Need to use record, otherwise future is not Send for some reason.
-        let module_asset_context_ref = module_asset_context.await?;
-        span.record("layer", module_asset_context_ref.layer.name().as_str());
+        // You can't await multiple times in the span macro call parameters.
+        span.record("layer", module_asset_context.await?.layer.name().as_str());
     }
+
     process_default_internal(
         module_asset_context,
         source,
@@ -713,7 +730,6 @@ async fn process_default_internal(
 
 #[turbo_tasks::function]
 pub async fn externals_tracing_module_context(
-    ty: ExternalType,
     compile_time_info: Vc<CompileTimeInfo>,
 ) -> Result<Vc<ModuleAssetContext>> {
     let resolve_options = ResolveOptionsContext {
@@ -721,20 +737,18 @@ pub async fn externals_tracing_module_context(
         emulate_environment: Some(compile_time_info.await?.environment),
         loose_errors: true,
         collect_affecting_sources: true,
-        custom_conditions: match ty {
-            ExternalType::CommonJs => vec![rcstr!("require"), rcstr!("node")],
-            ExternalType::EcmaScriptModule => vec![rcstr!("import"), rcstr!("node")],
-            ExternalType::Url | ExternalType::Global | ExternalType::Script => vec![rcstr!("node")],
-        },
+        custom_conditions: vec![rcstr!("node")],
         ..Default::default()
     };
 
     Ok(ModuleAssetContext::new_without_replace_externals(
         Default::default(),
         compile_time_info,
-        // Keep these options more or less in sync with
-        // turbopack/crates/turbopack/tests/node-file-trace.rs to ensure that the NFT unit tests
-        // are actually representative of what Turbopack does.
+        // This config should be kept in sync with
+        // turbopack/crates/turbopack-tracing/tests/node-file-trace.rs and
+        // turbopack/crates/turbopack-tracing/tests/unit.rs and
+        // turbopack/crates/turbopack/src/lib.rs and
+        // turbopack/crates/turbopack-nft/src/nft.rs
         ModuleOptionsContext {
             ecmascript: EcmascriptOptionsContext {
                 enable_typescript_transform: Some(
@@ -754,6 +768,9 @@ pub async fn externals_tracing_module_context(
             // node-file-trace.
             environment: None,
             analyze_mode: AnalyzeMode::Tracing,
+            // Disable tree shaking. Even side-effect-free imports need to be traced, as they will
+            // execute at runtime.
+            tree_shaking_mode: None,
             ..Default::default()
         }
         .cell(),
@@ -869,16 +886,14 @@ impl AssetContext for ModuleAssetContext {
                                     // anyway.
 
                                     let options = options.await?;
+                                    let origin = PlainResolveOrigin::new(
+                                        Vc::upcast(externals_tracing_module_context(
+                                            *options.compile_time_info,
+                                        )),
+                                        options.tracing_root.join("_")?,
+                                    );
                                     CachedExternalTracingMode::Traced {
-                                        externals_context: ResolvedVc::upcast(
-                                            externals_tracing_module_context(
-                                                ty,
-                                                *options.compile_time_info,
-                                            )
-                                            .to_resolved()
-                                            .await?,
-                                        ),
-                                        root_origin: options.tracing_root.join("_")?,
+                                        origin: ResolvedVc::upcast(origin.to_resolved().await?),
                                     }
                                 } else {
                                     CachedExternalTracingMode::Untraced

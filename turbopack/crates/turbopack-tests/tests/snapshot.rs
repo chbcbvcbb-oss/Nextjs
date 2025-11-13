@@ -33,7 +33,7 @@ use turbopack_core::{
     asset::Asset,
     chunk::{
         ChunkingConfig, ChunkingContext, ChunkingContextExt, EvaluatableAsset, EvaluatableAssetExt,
-        EvaluatableAssets, MinifyType, availability_info::AvailabilityInfo,
+        EvaluatableAssets, MinifyType, SourceMapSourceType, availability_info::AvailabilityInfo,
     },
     compile_time_defines,
     compile_time_info::{CompileTimeDefineValue, CompileTimeInfo, DefinableNameSegment},
@@ -89,6 +89,10 @@ struct SnapshotOptions {
     scope_hoisting: bool,
     #[serde(default)]
     production_chunking: bool,
+    #[serde(default)]
+    enable_debug_ids: bool,
+    #[serde(default)]
+    source_map_source_type: SourceMapSourceType,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -118,6 +122,8 @@ impl Default for SnapshotOptions {
             remove_unused_exports: false,
             scope_hoisting: false,
             production_chunking: false,
+            enable_debug_ids: false,
+            source_map_source_type: SourceMapSourceType::default(),
         }
     }
 }
@@ -219,9 +225,8 @@ async fn run(resource: PathBuf) -> Result<()> {
 async fn run_inner_operation(resource: RcStr) -> Result<()> {
     let out_op = run_test_operation(resource);
     let out_vc = out_op.resolve_strongly_consistent().await?.owned().await?;
-    let captured_issues = out_op.peek_issues().await?;
 
-    let plain_issues = captured_issues.get_plain_issues().await?;
+    let plain_issues = out_op.peek_issues().get_plain_issues().await?;
 
     snapshot_issues(plain_issues, out_vc.join("issues")?, &REPO_ROOT)
         .await
@@ -350,6 +355,7 @@ async fn run_test_operation(resource: RcStr) -> Result<Vc<FileSystemPath>> {
                     ..Default::default()
                 })),
                 ignore_dynamic_requests: true,
+                enable_exports_info_inlining: true,
                 ..Default::default()
             },
             environment: Some(env),
@@ -368,7 +374,7 @@ async fn run_test_operation(resource: RcStr) -> Result<Vc<FileSystemPath>> {
             analyze_mode: AnalyzeMode::CodeGenerationAndTracing,
             ..Default::default()
         }
-        .into(),
+        .cell(),
         ResolveOptionsContext {
             enable_typescript: true,
             enable_react: true,
@@ -457,7 +463,9 @@ async fn run_test_operation(resource: RcStr) -> Result<Vc<FileSystemPath>> {
             )
             .minify_type(options.minify_type)
             .module_merging(options.scope_hoisting)
-            .export_usage(export_usage);
+            .export_usage(export_usage)
+            .debug_ids(options.enable_debug_ids)
+            .source_map_source_type(options.source_map_source_type);
 
             if options.production_chunking {
                 builder = builder.chunking_config(
@@ -485,7 +493,9 @@ async fn run_test_operation(resource: RcStr) -> Result<Vc<FileSystemPath>> {
             )
             .minify_type(options.minify_type)
             .module_merging(options.scope_hoisting)
-            .export_usage(export_usage);
+            .export_usage(export_usage)
+            .debug_ids(options.enable_debug_ids)
+            .source_map_source_type(options.source_map_source_type);
 
             if options.production_chunking {
                 builder = builder.chunking_config(

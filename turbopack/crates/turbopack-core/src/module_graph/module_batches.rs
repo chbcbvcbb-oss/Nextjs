@@ -50,7 +50,7 @@ pub struct ModuleBatchesGraphEdge {
 
 type EntriesList = FxIndexSet<ResolvedVc<Box<dyn Module>>>;
 
-#[turbo_tasks::value(cell = "new", eq = "manual", into = "new")]
+#[turbo_tasks::value(cell = "new", eq = "manual")]
 pub struct ModuleBatchesGraph {
     graph: TracedDiGraph<ModuleOrBatch, ModuleBatchesGraphEdge>,
 
@@ -295,7 +295,7 @@ impl PreBatches {
                     },
                     |(_, ty)| &ty.chunking_type,
                 );
-                let module = node.module;
+                let module = node;
                 if !ty.is_parallel() {
                     state.items.push(PreBatchItem::NonParallelEdge(
                         ty.without_inherit_async(),
@@ -319,7 +319,7 @@ impl PreBatches {
                 }
             },
             |_, node, state| {
-                let item = PreBatchItem::ParallelModule(node.module);
+                let item = PreBatchItem::ParallelModule(node);
                 state.items.push(item);
                 Ok(())
             },
@@ -352,7 +352,7 @@ pub async fn compute_module_batches(
         // different chunk group bitmap)
         module_graph.traverse_all_edges_unordered(|(parent, ty), node| {
             let std::collections::hash_set::Entry::Vacant(entry) =
-                pre_batches.boundary_modules.entry(node.module)
+                pre_batches.boundary_modules.entry(node)
             else {
                 // Already a boundary module, can skip check
                 return Ok(());
@@ -360,11 +360,11 @@ pub async fn compute_module_batches(
             if ty.chunking_type.is_parallel() {
                 let parent_chunk_groups = chunk_group_info
                     .module_chunk_groups
-                    .get(&parent.module)
+                    .get(&parent)
                     .context("all modules need to have chunk group info")?;
                 let chunk_groups = chunk_group_info
                     .module_chunk_groups
-                    .get(&node.module)
+                    .get(&node)
                     .context("all modules need to have chunk group info")?;
                 if parent_chunk_groups != chunk_groups {
                     // This is a boundary module
@@ -390,12 +390,13 @@ pub async fn compute_module_batches(
             |cycle| {
                 if cycle
                     .iter()
-                    .any(|node| pre_batches.boundary_modules.contains(&node.module))
+                    .any(|node| pre_batches.boundary_modules.contains(node))
                 {
                     pre_batches
                         .boundary_modules
-                        .extend(cycle.iter().map(|node| node.module));
+                        .extend(cycle.iter().map(|node| **node));
                 }
+                Ok(())
             },
         )?;
 
@@ -751,8 +752,7 @@ pub async fn compute_module_batches(
         // Create the batch groups by grouping batches with the same chunk groups
         let mut batch_groups: FxHashMap<_, Vec<_>> = FxHashMap::default();
         for (i, pre_batch) in pre_batches.batches.iter().enumerate() {
-            let key =
-                BuildHasherDefault::<FxHasher>::default().prehash(pre_batch.chunk_groups.clone());
+            let key = BuildHasherDefault::<FxHasher>::default().prehash(&pre_batch.chunk_groups);
             let batch = batches[i];
             batch_groups.entry(key).or_default().push(batch);
         }
@@ -761,7 +761,7 @@ pub async fn compute_module_batches(
                 .module_chunk_groups
                 .get(&module)
                 .context("all modules need to have chunk group info")?;
-            let key = BuildHasherDefault::<FxHasher>::default().prehash(chunk_groups.clone());
+            let key = BuildHasherDefault::<FxHasher>::default().prehash(chunk_groups);
             batch_groups
                 .entry(key)
                 .or_default()

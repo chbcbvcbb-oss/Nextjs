@@ -143,7 +143,7 @@ impl ExportUsage {
 }
 
 #[turbo_tasks::value(shared)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ModuleResolveResult {
     pub primary: SliceMap<RequestKey, ModuleResolveResultItem>,
     /// Affecting sources are other files that influence the resolve result.  For example,
@@ -575,30 +575,25 @@ impl ResolveResult {
     }
 
     pub fn source(source: ResolvedVc<Box<dyn Source>>) -> ResolvedVc<Self> {
-        Self::source_with_key(RequestKey::default(), source)
+        Self::source_with_key(RequestKey::default(), source).resolved_cell()
     }
 
-    pub fn source_with_key(
-        request_key: RequestKey,
-        source: ResolvedVc<Box<dyn Source>>,
-    ) -> ResolvedVc<Self> {
+    fn source_with_key(request_key: RequestKey, source: ResolvedVc<Box<dyn Source>>) -> Self {
         ResolveResult {
             primary: vec![(request_key, ResolveResultItem::Source(source))].into_boxed_slice(),
             affecting_sources: Default::default(),
         }
-        .resolved_cell()
     }
 
-    pub fn source_with_affecting_sources(
+    fn source_with_affecting_sources(
         request_key: RequestKey,
         source: ResolvedVc<Box<dyn Source>>,
         affecting_sources: Vec<ResolvedVc<Box<dyn Source>>>,
-    ) -> ResolvedVc<Self> {
+    ) -> Self {
         ResolveResult {
             primary: vec![(request_key, ResolveResultItem::Source(source))].into_boxed_slice(),
             affecting_sources: affecting_sources.into_boxed_slice(),
         }
-        .resolved_cell()
     }
 }
 
@@ -906,7 +901,7 @@ impl ResolveResult {
             primary: new_primary,
             affecting_sources: self.affecting_sources.clone(),
         }
-        .into())
+        .cell())
     }
 
     /// Returns a new [ResolveResult] where all [RequestKey]s are updated. The prefix is removed
@@ -932,7 +927,7 @@ impl ResolveResult {
             primary: new_primary,
             affecting_sources: self.affecting_sources.clone(),
         }
-        .into())
+        .cell())
     }
 
     /// Returns a new [ResolveResult] where all [RequestKey]s are updated. All keys matching
@@ -969,7 +964,7 @@ impl ResolveResult {
             primary: new_primary,
             affecting_sources: self.affecting_sources.clone(),
         }
-        .into())
+        .cell())
     }
 
     /// Returns a new [ResolveResult] where all [RequestKey]s are set to the
@@ -993,7 +988,7 @@ impl ResolveResult {
             primary: new_primary,
             affecting_sources: self.affecting_sources.clone(),
         }
-        .into()
+        .cell()
     }
 }
 
@@ -1221,16 +1216,16 @@ pub async fn find_context_file_or_package_key(
             &*read_package_json(Vc::upcast(FileSource::new(package_json_path.clone()))).await?
         && json.get(&*package_key).is_some()
     {
-        return Ok(FindContextFileResult::Found(package_json_path, Vec::new()).into());
+        return Ok(FindContextFileResult::Found(package_json_path, Vec::new()).cell());
     }
     for name in &*names.await? {
         let fs_path = lookup_path.join(name)?;
         if let Some(fs_path) = exists(&fs_path, None).await? {
-            return Ok(FindContextFileResult::Found(fs_path, Vec::new()).into());
+            return Ok(FindContextFileResult::Found(fs_path, Vec::new()).cell());
         }
     }
     if lookup_path.is_root() {
-        return Ok(FindContextFileResult::NotFound(Vec::new()).into());
+        return Ok(FindContextFileResult::NotFound(Vec::new()).cell());
     }
 
     Ok(find_context_file(lookup_path.parent(), names, false))
@@ -1416,17 +1411,17 @@ pub async fn resolve_raw(
 ) -> Result<Vc<ResolveResult>> {
     async fn to_result(
         request: RcStr,
-        path: FileSystemPath,
+        path: &FileSystemPath,
         collect_affecting_sources: bool,
-    ) -> Result<Vc<ResolveResult>> {
+    ) -> Result<ResolveResult> {
         let result = &*path.realpath_with_links().await?;
         let path = match &result.path_result {
             Ok(path) => path,
-            Err(e) => bail!(e.as_error_message(&path, result)),
+            Err(e) => bail!(e.as_error_message(path, result)),
         };
         let request_key = RequestKey::new(request);
         let source = ResolvedVc::upcast(FileSource::new(path.clone()).to_resolved().await?);
-        Ok(*if collect_affecting_sources {
+        Ok(if collect_affecting_sources {
             ResolveResult::source_with_affecting_sources(
                 request_key,
                 source,
@@ -1449,25 +1444,31 @@ pub async fn resolve_raw(
         matches: &[PatternMatch],
         collect_affecting_sources: bool,
     ) -> Result<Vec<Vc<ResolveResult>>> {
-        matches
+        Ok(matches
             .iter()
             .map(|m| async move {
                 Ok(if let PatternMatch::File(request, path) = m {
-                    Some(to_result(request.clone(), path.clone(), collect_affecting_sources).await?)
+                    Some(to_result(request.clone(), path, collect_affecting_sources).await?)
                 } else {
                     None
                 })
             })
             .try_flat_join()
-            .await
+            .await?
+            // Construct all the cells after resolving the results to ensure they are constructed in
+            // a deterministic order.
+            .into_iter()
+            .map(|res| res.cell())
+            .collect())
     }
 
     let mut results = Vec::new();
 
-    let lookup_dir_str = lookup_dir.value_to_string().await?;
     let pat = path.await?;
     if let Some(pat) = pat
         .filter_could_match("/ROOT/")
+        // Checks if this pattern is more specific than everything, so we test using a random path
+        // that is unlikely to actually exist
         .and_then(|pat| pat.filter_could_not_match("/ROOT/fsd8nz8og54z"))
     {
         let path = Pattern::new(pat);
@@ -1478,33 +1479,17 @@ pub async fn resolve_raw(
             path,
         )
         .await?;
-        if matches.len() > 10000 {
-            let path_str = path.to_string().await?;
-            println!(
-                "WARN: resolving abs pattern {} in {} leads to {} results",
-                path_str,
-                lookup_dir_str,
-                matches.len()
-            );
-        } else {
-            results.extend(
-                collect_matches(&matches, collect_affecting_sources)
-                    .await?
-                    .into_iter(),
-            );
-        }
+        results.extend(
+            collect_matches(&matches, collect_affecting_sources)
+                .await?
+                .into_iter(),
+        );
     }
 
     {
-        let matches = read_matches(lookup_dir, rcstr!(""), force_in_lookup_dir, path).await?;
-        if matches.len() > 10000 {
-            println!(
-                "WARN: resolving pattern {} in {} leads to {} results",
-                pat.describe_as_string(),
-                lookup_dir_str,
-                matches.len()
-            );
-        }
+        let matches =
+            read_matches(lookup_dir.clone(), rcstr!(""), force_in_lookup_dir, path).await?;
+
         results.extend(
             collect_matches(&matches, collect_affecting_sources)
                 .await?
@@ -1531,16 +1516,17 @@ pub async fn resolve_inline(
     request: Vc<Request>,
     options: Vc<ResolveOptions>,
 ) -> Result<Vc<ResolveResult>> {
-    let span = {
-        let lookup_path = lookup_path.value_to_string().await?.to_string();
-        let request = request.to_string().await?.to_string();
-        tracing::info_span!(
-            "resolving",
-            lookup_path = lookup_path,
-            name = request,
-            reference_type = display(&reference_type),
-        )
-    };
+    let span = tracing::info_span!(
+        "resolving",
+        lookup_path = display(lookup_path.value_to_string().await?),
+        name = tracing::field::Empty,
+        reference_type = display(&reference_type),
+    );
+    if !span.is_disabled() {
+        // You can't await multiple times in the span macro call parameters.
+        span.record("name", request.to_string().await?.as_str());
+    }
+
     async {
         let before_plugins_result = handle_before_resolve_plugins(
             lookup_path.clone(),
@@ -1740,15 +1726,16 @@ async fn resolve_internal_inline(
     request: Vc<Request>,
     options: Vc<ResolveOptions>,
 ) -> Result<Vc<ResolveResult>> {
-    let span = {
-        let lookup_path = lookup_path.value_to_string().await?.to_string();
-        let request = request.to_string().await?.to_string();
-        tracing::info_span!(
-            "internal resolving",
-            lookup_path = lookup_path,
-            name = request
-        )
-    };
+    let span = tracing::info_span!(
+        "internal resolving",
+        lookup_path = display(lookup_path.value_to_string().await?),
+        name = tracing::field::Empty
+    );
+    if !span.is_disabled() {
+        // You can't await multiple times in the span macro call parameters.
+        span.record("name", request.to_string().await?.as_str());
+    }
+
     async move {
         let options_value: &ResolveOptions = &*options.await?;
 
@@ -2860,8 +2847,8 @@ async fn resolved(
             .to_resolved()
             .await?,
     );
-    if options_value.collect_affecting_sources {
-        Ok(*ResolveResult::source_with_affecting_sources(
+    Ok(if options_value.collect_affecting_sources {
+        ResolveResult::source_with_affecting_sources(
             request_key,
             source,
             result
@@ -2874,10 +2861,11 @@ async fn resolved(
                 })
                 .try_join()
                 .await?,
-        ))
+        )
     } else {
-        Ok(*ResolveResult::source_with_key(request_key, source))
+        ResolveResult::source_with_key(request_key, source)
     }
+    .cell())
 }
 
 async fn handle_exports_imports_field(

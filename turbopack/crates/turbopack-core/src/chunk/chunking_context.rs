@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use turbo_rcstr::RcStr;
@@ -133,13 +133,22 @@ pub struct ChunkingConfig {
 #[turbo_tasks::value(transparent)]
 pub struct ChunkingConfigs(FxHashMap<ResolvedVc<Box<dyn ChunkType>>, ChunkingConfig>);
 
+#[turbo_tasks::value(shared)]
+#[derive(Debug, Clone, Copy, Hash, TaskInput, Default)]
+pub enum SourceMapSourceType {
+    AbsoluteFileUri,
+    RelativeUri,
+    #[default]
+    TurbopackUri,
+}
+
 /// A context for the chunking that influences the way chunks are created
 #[turbo_tasks::value_trait]
 pub trait ChunkingContext {
     #[turbo_tasks::function]
     fn name(self: Vc<Self>) -> Vc<RcStr>;
     #[turbo_tasks::function]
-    fn should_use_file_source_map_uris(self: Vc<Self>) -> Vc<bool>;
+    fn source_map_source_type(self: Vc<Self>) -> Vc<SourceMapSourceType>;
     /// The root path of the project
     #[turbo_tasks::function]
     fn root_path(self: Vc<Self>) -> Vc<FileSystemPath>;
@@ -184,14 +193,17 @@ pub trait ChunkingContext {
 
     /// Returns a URL (relative or absolute, depending on the asset prefix) to
     /// the static asset based on its `ident`.
+    /// The `tag` is an arbitrary string that can be used to distinguish
+    /// different usages of the same asset (e.g. different base paths).
     #[turbo_tasks::function]
-    fn asset_url(self: Vc<Self>, ident: FileSystemPath) -> Result<Vc<RcStr>>;
+    fn asset_url(self: Vc<Self>, ident: FileSystemPath, tag: Option<RcStr>) -> Result<Vc<RcStr>>;
 
     #[turbo_tasks::function]
     fn asset_path(
         self: Vc<Self>,
         content_hash: RcStr,
         original_asset_ident: Vc<AssetIdent>,
+        tag: Option<RcStr>,
     ) -> Vc<FileSystemPath>;
 
     #[turbo_tasks::function]
@@ -234,6 +246,11 @@ pub trait ChunkingContext {
     #[turbo_tasks::function]
     fn minify_type(self: Vc<Self>) -> Vc<MinifyType> {
         MinifyType::NoMinify.cell()
+    }
+
+    #[turbo_tasks::function]
+    fn should_use_absolute_url_references(self: Vc<Self>) -> Vc<bool> {
+        Vc::cell(false)
     }
 
     #[turbo_tasks::function]
@@ -299,6 +316,10 @@ pub trait ChunkingContext {
         self: Vc<Self>,
         module: Vc<Box<dyn Module>>,
     ) -> Result<Vc<ModuleExportUsage>>;
+
+    /// Returns whether debug IDs are enabled for this chunking context.
+    #[turbo_tasks::function]
+    fn debug_ids_enabled(self: Vc<Self>) -> Vc<bool>;
 }
 
 pub trait ChunkingContextExt {
@@ -371,6 +392,13 @@ pub trait ChunkingContextExt {
         module_graph: Vc<ModuleGraph>,
         availability_info: AvailabilityInfo,
     ) -> Vc<OutputAssetsWithReferenced>
+    where
+        Self: Send;
+
+    /// Computes the relative path from the chunk output root to the project root.
+    ///
+    /// This is used to compute relative paths for source maps in certain configurations.
+    fn relative_path_from_chunk_root_to_project_root(self: Vc<Self>) -> Vc<RcStr>
     where
         Self: Send;
 }
@@ -487,6 +515,52 @@ impl<T: ChunkingContext + Send + Upcast<Box<dyn ChunkingContext>>> ChunkingConte
             availability_info,
         )
     }
+
+    fn relative_path_from_chunk_root_to_project_root(self: Vc<Self>) -> Vc<RcStr> {
+        relative_path_from_chunk_root_to_project_root(Vc::upcast_non_strict(self))
+    }
+}
+
+#[turbo_tasks::function]
+async fn relative_path_from_chunk_root_to_project_root(
+    chunking_context: Vc<Box<dyn ChunkingContext>>,
+) -> Result<Vc<RcStr>> {
+    // Example,
+    //   project root: /project/root
+    //   output root: /project/root/dist
+    //   chunk root path: /project/root/dist/ssr/chunks
+    //   output_root_to_chunk_root: ../
+    //
+    // Example2,
+    //   project root: /project/root
+    //   output root: /project/out
+    //   chunk root path: /project/out/ssr/chunks
+    //   output_root_to_chunk_root: ../root
+    //
+    // From that we want to return  ../../../root to get from a path in `chunks` to a path in the
+    // project root.
+
+    let chunk_root_path = chunking_context.chunk_root_path().await?;
+    let output_root = chunking_context.output_root().await?;
+    let chunk_to_output_root = chunk_root_path.get_relative_path_to(&output_root);
+    let Some(chunk_to_output_root) = chunk_to_output_root else {
+        bail!(
+            "expected chunk_root_path: {chunk_root_path} to be inside of output_root: \
+             {output_root}",
+            chunk_root_path = chunk_root_path.value_to_string().await?,
+            output_root = output_root.value_to_string().await?
+        );
+    };
+    let output_root_to_chunk_root_path = chunking_context.output_root_to_root_path().await?;
+
+    // Note we cannot use `normalize_path` here since it rejects paths that start with `../`
+    Ok(Vc::cell(
+        format!(
+            "{}/{}",
+            chunk_to_output_root, output_root_to_chunk_root_path
+        )
+        .into(),
+    ))
 }
 
 #[turbo_tasks::function]

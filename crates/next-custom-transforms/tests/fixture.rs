@@ -6,21 +6,19 @@ use std::{
 
 use bytes_str::BytesStr;
 use next_custom_transforms::transforms::{
-    amp_attributes::amp_attributes,
     cjs_optimizer::cjs_optimizer,
     debug_fn_name::debug_fn_name,
-    dynamic::{next_dynamic, NextDynamicMode},
-    fonts::{next_font_loaders, Config as FontLoaderConfig},
+    dynamic::{NextDynamicMode, next_dynamic},
+    fonts::{Config as FontLoaderConfig, next_font_loaders},
     named_import_transform::named_import_transform,
     next_ssg::next_ssg,
     optimize_barrel::optimize_barrel,
     optimize_server_react::{self, optimize_server_react},
-    page_config::page_config_test,
     pure::pure_magic,
     react_server_components::server_components,
-    server_actions::{self, server_actions, ServerActionsMode},
-    shake_exports::{shake_exports, Config as ShakeExportsConfig},
-    strip_page_exports::{next_transform_strip_page_exports, ExportFilter},
+    server_actions::{self, ServerActionsMode, server_actions},
+    shake_exports::{Config as ShakeExportsConfig, shake_exports},
+    strip_page_exports::{ExportFilter, next_transform_strip_page_exports},
     track_dynamic_imports::track_dynamic_imports,
     warn_for_edge_runtime::warn_for_edge_runtime,
 };
@@ -28,20 +26,20 @@ use rustc_hash::FxHashSet;
 use serde::de::DeserializeOwned;
 use swc_core::{
     atoms::atom,
-    common::{comments::SingleThreadedComments, FileName, Mark, SyntaxContext},
+    common::{FileName, Mark, SyntaxContext, comments::SingleThreadedComments},
     ecma::{
         ast::Pass,
         parser::{EsSyntax, Syntax},
         transforms::{
             base::resolver,
             react::jsx,
-            testing::{test_fixture, FixtureTestConfig},
+            testing::{FixtureTestConfig, test_fixture},
         },
         utils::ExprCtx,
-        visit::{visit_mut_pass, visit_pass, Visit},
+        visit::{Visit, visit_mut_pass, visit_pass},
     },
 };
-use swc_relay::{relay, RelayLanguageConfig};
+use swc_relay::{RelayLanguageConfig, relay};
 use testing::fixture;
 
 fn syntax() -> Syntax {
@@ -50,18 +48,6 @@ fn syntax() -> Syntax {
         import_attributes: true,
         ..Default::default()
     })
-}
-
-#[fixture("tests/fixture/amp/**/input.js")]
-fn amp_attributes_fixture(input: PathBuf) {
-    let output = input.parent().unwrap().join("output.js");
-    test_fixture(
-        syntax(),
-        &|_tr| amp_attributes(),
-        &input,
-        &output,
-        Default::default(),
-    );
 }
 
 #[fixture("tests/fixture/next-dynamic/**/input.js")]
@@ -388,18 +374,6 @@ fn next_ssg_fixture(input: PathBuf) {
     );
 }
 
-#[fixture("tests/fixture/page-config/**/input.js")]
-fn page_config_fixture(input: PathBuf) {
-    let output = input.parent().unwrap().join("output.js");
-    test_fixture(
-        syntax(),
-        &|_tr| page_config_test(),
-        &input,
-        &output,
-        Default::default(),
-    );
-}
-
 #[fixture("tests/fixture/relay/**/input.ts*")]
 fn relay_no_artifact_dir_fixture(input: PathBuf) {
     let output = input.parent().unwrap().join("output.js");
@@ -497,19 +471,39 @@ fn react_server_components_typescript(input: PathBuf) {
 fn react_server_components_fixture(input: PathBuf) {
     use next_custom_transforms::transforms::react_server_components::{Config, Options};
     let is_react_server_layer = input.iter().any(|s| s.to_str() == Some("server-graph"));
+    let filename = FileName::Real(PathBuf::from("/some-project/src/some-file.js"));
     let output = input.parent().unwrap().join("output.js");
     test_fixture(
         syntax(),
         &|tr| {
-            server_components(
-                FileName::Real(PathBuf::from("/some-project/src/some-file.js")).into(),
-                Config::WithOptions(Options {
-                    is_react_server_layer,
-                    cache_components_enabled: false,
-                    use_cache_enabled: false,
-                }),
-                tr.comments.as_ref().clone(),
-                None,
+            (
+                // The transforms are intentionally declared in the same order as in
+                // crates/next-custom-transforms/src/chain_transforms.rs
+                server_components(
+                    filename.clone().into(),
+                    Config::WithOptions(Options {
+                        is_react_server_layer,
+                        cache_components_enabled: false,
+                        use_cache_enabled: false,
+                    }),
+                    tr.comments.as_ref().clone(),
+                    None,
+                ),
+                server_actions(
+                    &filename,
+                    None,
+                    server_actions::Config {
+                        is_react_server_layer,
+                        is_development: true,
+                        use_cache_enabled: true,
+                        hash_salt: "".into(),
+                        cache_kinds: FxHashSet::default(),
+                    },
+                    tr.comments.as_ref().clone(),
+                    tr.cm.clone(),
+                    Default::default(),
+                    ServerActionsMode::Webpack,
+                ),
             )
         },
         &input,

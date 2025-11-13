@@ -168,8 +168,8 @@ pub enum SpecifiedModuleType {
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum TreeShakingMode {
-    #[default]
     ModuleFragments,
+    #[default]
     ReexportsOnly,
 }
 
@@ -270,6 +270,10 @@ pub struct EcmascriptOptions {
     // node_modules.
     /// Whether to replace `typeof window` with some constant value.
     pub enable_typeof_window_inlining: Option<TypeofWindow>,
+    /// Whether to allow accessing exports info via `__webpack_exports_info__`.
+    pub enable_exports_info_inlining: bool,
+
+    pub inline_helpers: bool,
 }
 
 #[turbo_tasks::value]
@@ -277,6 +281,8 @@ pub struct EcmascriptOptions {
 pub enum EcmascriptModuleAssetType {
     /// Module with EcmaScript code
     Ecmascript,
+    /// Module with (presumed) EcmaScript code, but it was extensionless
+    EcmascriptExtensionless,
     /// Module with TypeScript code without types
     Typescript {
         // parse JSX syntax.
@@ -292,13 +298,16 @@ impl Display for EcmascriptModuleAssetType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             EcmascriptModuleAssetType::Ecmascript => write!(f, "ecmascript"),
+            EcmascriptModuleAssetType::EcmascriptExtensionless => {
+                write!(f, "ecmascript extensionless")
+            }
             EcmascriptModuleAssetType::Typescript { tsx, analyze_types } => {
                 write!(f, "typescript")?;
                 if *tsx {
-                    write!(f, "with JSX")?;
+                    write!(f, " with JSX")?;
                 }
                 if *analyze_types {
-                    write!(f, "with types")?;
+                    write!(f, " with types")?;
                 }
                 Ok(())
             }
@@ -489,11 +498,12 @@ impl EcmascriptParsable for EcmascriptModuleAsset {
     #[turbo_tasks::function]
     async fn failsafe_parse(self: Vc<Self>) -> Result<Vc<ParseResult>> {
         let this = self.await?;
-        let real_result = this.parse();
+        let real_result = this.parse().await?;
         if this.options.await?.keep_last_successful_parse {
             let real_result_value = real_result.await?;
             let result_value = if matches!(*real_result_value, ParseResult::Ok { .. }) {
-                this.last_successful_parse.set(real_result_value.clone());
+                this.last_successful_parse
+                    .set_unconditionally(real_result_value.clone());
                 real_result_value
             } else {
                 let state_ref = this.last_successful_parse.get();
@@ -532,7 +542,7 @@ impl EcmascriptAnalyzable for EcmascriptModuleAsset {
     ) -> Result<Vc<EcmascriptModuleContent>> {
         let this = self.await?;
 
-        let parsed = this.parse();
+        let parsed = this.parse().await?;
 
         Ok(EcmascriptModuleContent::new_without_analysis(
             parsed,
@@ -548,7 +558,7 @@ impl EcmascriptAnalyzable for EcmascriptModuleAsset {
         chunking_context: ResolvedVc<Box<dyn ChunkingContext>>,
         async_module_info: Option<ResolvedVc<AsyncModuleInfo>>,
     ) -> Result<Vc<EcmascriptModuleContentOptions>> {
-        let parsed = self.await?.parse().to_resolved().await?;
+        let parsed = self.await?.parse().await?.to_resolved().await?;
 
         let analyze = self.analyze();
         let analyze_ref = analyze.await?;
@@ -681,8 +691,15 @@ impl EcmascriptModuleAsset {
 }
 
 impl EcmascriptModuleAsset {
-    pub fn parse(&self) -> Vc<ParseResult> {
-        parse(*self.source, self.ty, *self.transforms)
+    pub async fn parse(&self) -> Result<Vc<ParseResult>> {
+        let options = self.options.await?;
+        Ok(parse(
+            *self.source,
+            self.ty,
+            *self.transforms,
+            options.analyze_mode == AnalyzeMode::Tracing,
+            options.inline_helpers,
+        ))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -1010,7 +1027,14 @@ impl EcmascriptModuleContentOptions {
             let code_gens = code_generation
                 .await?
                 .iter()
-                .map(|c| c.code_generation(**chunking_context, scope_hoisting_context))
+                .map(|c| {
+                    c.code_generation(
+                        **chunking_context,
+                        scope_hoisting_context,
+                        *module,
+                        *exports,
+                    )
+                })
                 .try_join()
                 .await?;
 
@@ -1044,24 +1068,20 @@ impl EcmascriptModuleContent {
             ..
         } = &*input;
 
-        async {
-            let minify = chunking_context.minify_type().await?;
+        let minify = chunking_context.minify_type().await?;
 
-            let content = process_parse_result(
-                *parsed,
-                module.ident(),
-                *specified_module_type,
-                *generate_source_map,
-                *original_source_map,
-                *minify,
-                Some(&*input),
-                None,
-            )
-            .await?;
-            emit_content(content, Default::default()).await
-        }
-        .instrument(tracing::info_span!("gen content with code gens"))
-        .await
+        let content = process_parse_result(
+            *parsed,
+            module.ident(),
+            *specified_module_type,
+            *generate_source_map,
+            *original_source_map,
+            *minify,
+            Some(&*input),
+            None,
+        )
+        .await?;
+        emit_content(content, Default::default()).await
     }
 
     /// Creates a new [`Vc<EcmascriptModuleContent>`] without an analysis pass.
@@ -1204,11 +1224,11 @@ impl EcmascriptModuleContent {
                 .into();
 
             emit_content(content, additional_ids)
-                .instrument(tracing::info_span!("emit"))
+                .instrument(tracing::info_span!("emit code"))
                 .await
         }
         .instrument(tracing::info_span!(
-            "merged EcmascriptModuleContent",
+            "generate merged code",
             modules = module_options.len()
         ))
         .await
@@ -2537,9 +2557,9 @@ impl SourceMapper for CodeGenResultSourceMap {
     }
     fn span_to_snippet(&self, sp: Span) -> Result<String, Box<SpanSnippetError>> {
         match self {
-            CodeGenResultSourceMap::None => {
-                panic!("CodeGenResultSourceMap::None cannot span_to_snippet")
-            }
+            CodeGenResultSourceMap::None => Err(Box::new(SpanSnippetError::SourceNotAvailable {
+                filename: FileName::Anon,
+            })),
             CodeGenResultSourceMap::Single { source_map } => source_map.span_to_snippet(sp),
             CodeGenResultSourceMap::ScopeHoisting {
                 modules_header_width,

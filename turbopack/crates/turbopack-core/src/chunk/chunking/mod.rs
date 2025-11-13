@@ -321,7 +321,7 @@ pub async fn make_chunks(
     let mut chunks = Vec::new();
     for (ty, (chunk_items, batch_groups)) in map {
         let ty_name = ty.to_string().await?;
-        let span = tracing::trace_span!("make chunks for type", name = ty_name.as_str());
+        let span = tracing::trace_span!("make chunks for type", name = display(&ty_name));
         async {
             let mut split_context = SplitContext {
                 ty,
@@ -399,8 +399,8 @@ struct SplitContext<'a> {
 
 /// Creates a chunk with the given `chunk_items. `key` should be unique.
 #[tracing::instrument(level = Level::TRACE, skip_all, fields(key = display(key)))]
-async fn make_chunk<'l>(
-    chunk_items: Vec<&'l ChunkItemOrBatchWithInfo>,
+async fn make_chunk(
+    chunk_items: Vec<&'_ ChunkItemOrBatchWithInfo>,
     batch_groups: Vec<ResolvedVc<ChunkItemBatchGroup>>,
     key: &mut String,
     split_context: &mut SplitContext<'_>,

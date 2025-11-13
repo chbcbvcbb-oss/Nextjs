@@ -16,7 +16,7 @@ use turbopack::{
 };
 use turbopack_core::{
     chunk::{
-        ChunkingConfig, MangleType, MinifyType, SourceMapsType,
+        ChunkingConfig, MangleType, MinifyType, SourceMapSourceType, SourceMapsType,
         module_id_strategies::ModuleIdStrategy,
     },
     compile_time_defines,
@@ -214,6 +214,13 @@ pub async fn get_server_resolve_options_context(
         custom_conditions.push(rcstr!("react-server"));
     };
 
+    if *next_config.enable_cache_components().await?
+        // Middleware shouldn't use the "next-js" condition because it doesn't have all Next.js APIs available
+        && !matches!(ty, ServerContextType::Middleware { .. } |  ServerContextType::Instrumentation { .. })
+    {
+        custom_conditions.push(rcstr!("next-js"));
+    };
+
     let external_cjs_modules_plugin = if *next_config.bundle_pages_router_dependencies().await? {
         server_external_packages_plugin
     } else {
@@ -358,7 +365,7 @@ async fn next_server_free_vars(define_env: Vc<OptionEnvMap>) -> Result<Vc<FreeVa
 
 #[turbo_tasks::function]
 pub async fn get_server_compile_time_info(
-    cwd: RcStr,
+    cwd: Vc<FileSystemPath>,
     define_env: Vc<OptionEnvMap>,
     node_version: ResolvedVc<NodeJsVersion>,
 ) -> Result<Vc<CompileTimeInfo>> {
@@ -367,7 +374,7 @@ pub async fn get_server_compile_time_info(
             NodeJsEnvironment {
                 compile_target: CompileTarget::current().to_resolved().await?,
                 node_version,
-                cwd: ResolvedVc::cell(Some(cwd)),
+                cwd: ResolvedVc::cell(Some(cwd.owned().await?)),
             }
             .resolved_cell(),
         ))
@@ -993,13 +1000,15 @@ pub struct ServerChunkingContextOptions {
     pub turbo_source_maps: Vc<bool>,
     pub no_mangling: Vc<bool>,
     pub scope_hoisting: Vc<bool>,
+    pub debug_ids: Vc<bool>,
+    pub client_root: FileSystemPath,
+    pub asset_prefix: RcStr,
 }
 
+/// Like `get_server_chunking_context` but all assets are emitted as client assets (so `/_next`)
 #[turbo_tasks::function]
 pub async fn get_server_chunking_context_with_client_assets(
     options: ServerChunkingContextOptions,
-    client_root: FileSystemPath,
-    asset_prefix: Option<RcStr>,
 ) -> Result<Vc<NodeJsChunkingContext>> {
     let ServerChunkingContextOptions {
         mode,
@@ -1013,6 +1022,9 @@ pub async fn get_server_chunking_context_with_client_assets(
         turbo_source_maps,
         no_mangling,
         scope_hoisting,
+        debug_ids,
+        client_root,
+        asset_prefix,
     } = options;
 
     let next_mode = mode.await?;
@@ -1029,7 +1041,7 @@ pub async fn get_server_chunking_context_with_client_assets(
         environment.to_resolved().await?,
         next_mode.runtime_type(),
     )
-    .asset_prefix(asset_prefix)
+    .asset_prefix(Some(asset_prefix))
     .minify_type(if *turbo_minify.await? {
         MinifyType::Minify {
             // React needs deterministic function names to work correctly.
@@ -1045,11 +1057,15 @@ pub async fn get_server_chunking_context_with_client_assets(
     })
     .module_id_strategy(module_id_strategy.to_resolved().await?)
     .export_usage(*export_usage.await?)
-    .file_tracing(next_mode.is_production());
+    .file_tracing(next_mode.is_production())
+    .debug_ids(*debug_ids.await?);
 
-    if next_mode.is_development() {
-        builder = builder.use_file_source_map_uris();
+    builder = builder.source_map_source_type(if next_mode.is_development() {
+        SourceMapSourceType::AbsoluteFileUri
     } else {
+        SourceMapSourceType::RelativeUri
+    });
+    if next_mode.is_production() {
         builder = builder
             .chunking_config(
                 Vc::<EcmascriptChunkType>::default().to_resolved().await?,
@@ -1073,6 +1089,7 @@ pub async fn get_server_chunking_context_with_client_assets(
     Ok(builder.build())
 }
 
+// By default, assets are server assets, but the StructuredImageModuleType ones are on the client
 #[turbo_tasks::function]
 pub async fn get_server_chunking_context(
     options: ServerChunkingContextOptions,
@@ -1089,6 +1106,9 @@ pub async fn get_server_chunking_context(
         turbo_source_maps,
         no_mangling,
         scope_hoisting,
+        debug_ids,
+        client_root,
+        asset_prefix,
     } = options;
     let next_mode = mode.await?;
     // TODO(alexkirsz) This should return a trait that can be implemented by the
@@ -1104,6 +1124,9 @@ pub async fn get_server_chunking_context(
         environment.to_resolved().await?,
         next_mode.runtime_type(),
     )
+    .client_roots_override(rcstr!("client"), client_root.clone())
+    .asset_root_path_override(rcstr!("client"), client_root.join("static/media")?)
+    .asset_prefix_override(rcstr!("client"), asset_prefix)
     .minify_type(if *turbo_minify.await? {
         MinifyType::Minify {
             mangle: (!*no_mangling.await?).then_some(MangleType::OptimalSize),
@@ -1118,12 +1141,14 @@ pub async fn get_server_chunking_context(
     })
     .module_id_strategy(module_id_strategy.to_resolved().await?)
     .export_usage(*export_usage.await?)
-    .file_tracing(next_mode.is_production());
+    .file_tracing(next_mode.is_production())
+    .debug_ids(*debug_ids.await?);
 
     if next_mode.is_development() {
-        builder = builder.use_file_source_map_uris()
+        builder = builder.source_map_source_type(SourceMapSourceType::AbsoluteFileUri);
     } else {
         builder = builder
+            .source_map_source_type(SourceMapSourceType::RelativeUri)
             .chunking_config(
                 Vc::<EcmascriptChunkType>::default().to_resolved().await?,
                 ChunkingConfig {
