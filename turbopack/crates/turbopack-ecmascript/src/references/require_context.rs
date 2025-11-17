@@ -30,6 +30,7 @@ use turbopack_core::{
     issue::IssueSource,
     module::Module,
     module_graph::ModuleGraph,
+    output::OutputAssetsReference,
     reference::{ModuleReference, ModuleReferences},
     reference_type::CommonJsReferenceSubType,
     resolve::{ModuleResolveResult, origin::ResolveOrigin, parse::Request},
@@ -316,7 +317,9 @@ impl IntoCodeGenReference for RequireContextAssetReference {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize, TraceRawVcs, ValueDebugFormat, NonLocalValue)]
+#[derive(
+    PartialEq, Eq, Serialize, Deserialize, TraceRawVcs, ValueDebugFormat, NonLocalValue, Hash, Debug,
+)]
 pub struct RequireContextAssetReferenceCodeGen {
     path: AstPath,
     reference: ResolvedVc<RequireContextAssetReference>,
@@ -468,6 +471,9 @@ pub struct RequireContextChunkItem {
     origin: ResolvedVc<Box<dyn ResolveOrigin>>,
     map: ResolvedVc<RequireContextMap>,
 }
+
+#[turbo_tasks::value_impl]
+impl OutputAssetsReference for RequireContextChunkItem {}
 
 #[turbo_tasks::value_impl]
 impl EcmascriptChunkItem for RequireContextChunkItem {
