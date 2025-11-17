@@ -262,6 +262,13 @@ export async function copy_vercel_og(task, opts) {
   )
 }
 
+export async function copy_bundle_analyzer_ui(task, opts) {
+  const bundleAnalyzerPath = join(__dirname, '../../apps/bundle-analyzer/dist')
+  await task
+    .source(join(bundleAnalyzerPath, '**/*'))
+    .target('dist/bundle-analyzer')
+}
+
 externals['anser'] = 'next/dist/compiled/anser'
 externals['next/dist/compiled/anser'] = 'next/dist/compiled/anser'
 export async function ncc_node_anser(task, opts) {
@@ -2360,6 +2367,7 @@ export async function next_compile(task, opts) {
   await task.parallel(
     [
       'cli',
+      'copy_bundle_analyzer_ui',
       'bin',
       'server',
       'server_esm',
