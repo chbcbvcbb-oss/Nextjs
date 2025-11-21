@@ -5,7 +5,7 @@ use swc_core::{
     common::DUMMY_SP,
     ecma::{
         ast::*,
-        visit::{fold_pass, Fold},
+        visit::{Fold, fold_pass},
     },
 };
 
