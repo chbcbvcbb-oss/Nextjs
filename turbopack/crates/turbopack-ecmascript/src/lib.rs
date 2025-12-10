@@ -24,6 +24,7 @@ mod path_visitor;
 pub mod references;
 pub mod runtime_functions;
 pub mod side_effect_optimization;
+pub mod single_file_ecmascript_output;
 pub mod source_map;
 pub(crate) mod static_code;
 mod swc_comments;
@@ -44,6 +45,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use bincode::{Decode, Encode};
 use chunk::EcmascriptChunkItem;
 use code_gen::{CodeGeneration, CodeGenerationHoistedStmt};
 use either::Either;
@@ -85,7 +87,7 @@ pub use transform::{
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
     FxDashMap, FxIndexMap, IntoTraitRef, NonLocalValue, ReadRef, ResolvedVc, TaskInput,
-    TryFlatJoinIterExt, TryJoinIterExt, Upcast, ValueToString, Vc, trace::TraceRawVcs,
+    TryJoinIterExt, Upcast, ValueToString, Vc, trace::TraceRawVcs,
 };
 use turbo_tasks_fs::{FileJsonContent, FileSystemPath, glob::Glob, rope::Rope};
 use turbopack_core::{
@@ -143,6 +145,8 @@ use crate::{
     NonLocalValue,
     Serialize,
     Deserialize,
+    Encode,
+    Decode,
 )]
 pub enum SpecifiedModuleType {
     #[default]
@@ -166,6 +170,8 @@ pub enum SpecifiedModuleType {
     TaskInput,
     TraceRawVcs,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum TreeShakingMode {
@@ -189,6 +195,8 @@ pub enum TreeShakingMode {
     TaskInput,
     TraceRawVcs,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum AnalyzeMode {
     /// For bundling only, no tracing of referenced files.
@@ -232,6 +240,8 @@ pub struct OptionTreeShaking(pub Option<TreeShakingMode>);
     TraceRawVcs,
     NonLocalValue,
     TaskInput,
+    Encode,
+    Decode,
 )]
 pub enum TypeofWindow {
     Object,
@@ -734,6 +744,11 @@ impl Module for EcmascriptModuleAsset {
         ident.add_modifier(rcstr!("ecmascript"));
         ident.layer = Some(self.asset_context.into_trait_ref().await?.layer());
         Ok(AssetIdent::new(ident))
+    }
+
+    #[turbo_tasks::function]
+    fn source(&self) -> Vc<turbopack_core::source::OptionSource> {
+        Vc::cell(Some(self.source))
     }
 
     #[turbo_tasks::function]
@@ -1310,7 +1325,8 @@ async fn merge_modules(
             // corresponding export in the module that exports it.
             if let Some(&module) = self.reverse_module_contexts.get(ctxt) {
                 let eval_context_exports = self.export_contexts.get(&module).unwrap();
-                // TODO looking up an Atom in a Map<RcStr, _>
+                // TODO looking up an Atom in a Map<RcStr, _>, would ideally work without creating a
+                // RcStr every time.
                 let sym_rc_str: RcStr = sym.as_str().into();
                 let (local, local_ctxt) = if let Some((local, local_ctxt)) =
                     eval_context_exports.get(&sym_rc_str)
@@ -1323,10 +1339,11 @@ async fn merge_modules(
                     // generating this variable.
                     (None, SyntaxContext::empty())
                 } else {
-                    panic!(
+                    self.error = Err(anyhow::anyhow!(
                         "Expected to find a local export for {sym} with ctxt {ctxt:#?} in \
                          {eval_context_exports:?}",
-                    );
+                    ));
+                    return;
                 };
 
                 let global_ctxt = self.get_context_for(module, local_ctxt);
@@ -2127,14 +2144,21 @@ async fn emit_content(
     }
 
     let source_map = if generate_source_map {
+        let original_source_maps = original_source_map
+            .iter()
+            .map(|map| map.generate_source_map())
+            .try_join()
+            .await?;
+        let original_source_maps = original_source_maps
+            .iter()
+            .filter_map(|map| map.as_content())
+            .map(|map| map.content())
+            .collect::<Vec<_>>();
+
         Some(generate_js_source_map(
             &*source_map,
             mappings,
-            original_source_map
-                .iter()
-                .map(|map| map.generate_source_map())
-                .try_flat_join()
-                .await?,
+            original_source_maps,
             matches!(
                 original_source_map,
                 CodeGenResultOriginalSourceMap::Single(_)

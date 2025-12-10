@@ -1,6 +1,7 @@
 use std::{borrow::Cow, future::Future};
 
 use anyhow::{Result, bail};
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use swc_core::{
@@ -42,7 +43,18 @@ use crate::{
 };
 
 #[derive(
-    Default, PartialEq, Eq, Clone, Copy, Debug, TraceRawVcs, Serialize, Deserialize, NonLocalValue,
+    Default,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Debug,
+    TraceRawVcs,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum NextSegmentDynamic {
@@ -54,7 +66,18 @@ pub enum NextSegmentDynamic {
 }
 
 #[derive(
-    Default, PartialEq, Eq, Clone, Copy, Debug, TraceRawVcs, Serialize, Deserialize, NonLocalValue,
+    Default,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Debug,
+    TraceRawVcs,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum NextSegmentFetchCache {
@@ -69,7 +92,18 @@ pub enum NextSegmentFetchCache {
 }
 
 #[derive(
-    Default, PartialEq, Eq, Clone, Copy, Debug, TraceRawVcs, Serialize, Deserialize, NonLocalValue,
+    Default,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Debug,
+    TraceRawVcs,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum NextRevalidate {
     #[default]
@@ -95,6 +129,7 @@ pub struct NextSegmentConfig {
     pub generate_image_metadata: bool,
     pub generate_sitemaps: bool,
     #[turbo_tasks(trace_ignore)]
+    #[bincode(with_serde)]
     pub generate_static_params: Option<Span>,
 }
 
@@ -284,6 +319,8 @@ impl Issue for NextSegmentConfigParsingIssue {
     TaskInput,
     NonLocalValue,
     TraceRawVcs,
+    Encode,
+    Decode,
 )]
 pub enum ParseSegmentMode {
     Base,
@@ -417,7 +454,7 @@ pub async fn parse_segment_config_from_source(
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(decl)) => match &decl.decl {
                         Decl::Class(decl) => {
                             parse(
-                                &decl.ident.sym,
+                                Cow::Borrowed(decl.ident.sym.as_str()),
                                 Some(Cow::Owned(Expr::Class(ClassExpr {
                                     ident: None,
                                     class: decl.class.clone(),
@@ -428,7 +465,7 @@ pub async fn parse_segment_config_from_source(
                         }
                         Decl::Fn(decl) => {
                             parse(
-                                &decl.ident.sym,
+                                Cow::Borrowed(decl.ident.sym.as_str()),
                                 Some(Cow::Owned(Expr::Fn(FnExpr {
                                     ident: None,
                                     function: decl.function.clone(),
@@ -446,7 +483,7 @@ pub async fn parse_segment_config_from_source(
                                 let key = &ident.id.sym;
 
                                 parse(
-                                    key,
+                                    Cow::Borrowed(key.as_str()),
                                     Some(
                                         decl.init.as_deref().map(Cow::Borrowed).unwrap_or_else(
                                             || Cow::Owned(*Expr::undefined(DUMMY_SP)),
@@ -470,8 +507,10 @@ pub async fn parse_segment_config_from_source(
                             if let ExportSpecifier::Named(named) = specifier {
                                 parse(
                                     match named.exported.as_ref().unwrap_or(&named.orig) {
-                                        ModuleExportName::Ident(ident) => &ident.sym,
-                                        ModuleExportName::Str(s) => &*s.value,
+                                        ModuleExportName::Ident(ident) => {
+                                            Cow::Borrowed(ident.sym.as_str())
+                                        }
+                                        ModuleExportName::Str(s) => s.value.to_string_lossy(),
                                     },
                                     None,
                                     specifier.span(),
@@ -560,7 +599,7 @@ async fn parse_config_value(
     mode: ParseSegmentMode,
     config: &mut NextSegmentConfig,
     eval_context: &EvalContext,
-    key: &str,
+    key: Cow<'_, str>,
     init: Option<Cow<'_, Expr>>,
     span: Span,
 ) -> Result<()> {
@@ -586,7 +625,7 @@ async fn parse_config_value(
         })
     };
 
-    match key {
+    match &*key {
         "config" => {
             let Some(value) = get_value() else {
                 return invalid_config(

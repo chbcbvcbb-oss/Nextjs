@@ -1,6 +1,7 @@
 use std::mem::take;
 
 use anyhow::Result;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use swc_core::{
     atoms::{Atom, atom},
@@ -32,9 +33,18 @@ use crate::{
 };
 
 #[derive(
-    PartialEq, Eq, Serialize, Deserialize, TraceRawVcs, ValueDebugFormat, NonLocalValue, Debug, Hash,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    TraceRawVcs,
+    ValueDebugFormat,
+    NonLocalValue,
+    Debug,
+    Hash,
+    Encode,
+    Decode,
 )]
-
 pub struct Unreachable {
     range: AstPathRange,
 }
@@ -54,7 +64,7 @@ impl AstModifier for UnreachableModifier {
 
         *node = Expr::Lit(Lit::Str(Str {
             span,
-            value: unreachable_atom(),
+            value: unreachable_atom().into(),
             raw: None,
         }));
     }
