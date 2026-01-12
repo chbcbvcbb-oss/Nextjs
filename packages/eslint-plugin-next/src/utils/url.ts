@@ -8,25 +8,26 @@ const fsReadDirSyncCache = {}
 /**
  * Recursively parse directory for page URLs.
  */
-function parseUrlForPages(urlprefix: string, directory: string) {
+function parseUrlForPages(urlprefix: string, directory: string, rootDir?: string) {
   fsReadDirSyncCache[directory] ??= fs.readdirSync(directory, {
     withFileTypes: true,
   })
   const res = []
+  const { ext, index } = getRegexPatterns(rootDir)
+
   fsReadDirSyncCache[directory].forEach((dirent) => {
-    // TODO: this should account for all page extensions
-    // not just js(x) and ts(x)
-    if (/(\.(j|t)sx?)$/.test(dirent.name)) {
-      if (/^index(\.(j|t)sx?)$/.test(dirent.name)) {
-        res.push(
-          `${urlprefix}${dirent.name.replace(/^index(\.(j|t)sx?)$/, '')}`
-        )
+    if (ext.test(dirent.name)) {
+      if (index.test(dirent.name)) {
+        res.push(`${urlprefix}${dirent.name.replace(index, '')}`)
+      } else {
+        res.push(`${urlprefix}${dirent.name.replace(ext, '')}`)
       }
-      res.push(`${urlprefix}${dirent.name.replace(/(\.(j|t)sx?)$/, '')}`)
     } else {
       const dirPath = path.join(directory, dirent.name)
       if (dirent.isDirectory() && !dirent.isSymbolicLink()) {
-        res.push(...parseUrlForPages(urlprefix + dirent.name + '/', dirPath))
+        res.push(
+          ...parseUrlForPages(`${urlprefix}${dirent.name}/`, dirPath, rootDir)
+        )
       }
     }
   })
@@ -36,24 +37,26 @@ function parseUrlForPages(urlprefix: string, directory: string) {
 /**
  * Recursively parse app directory for URLs.
  */
-function parseUrlForAppDir(urlprefix: string, directory: string) {
+function parseUrlForAppDir(urlprefix: string, directory: string, rootDir?: string) {
   fsReadDirSyncCache[directory] ??= fs.readdirSync(directory, {
     withFileTypes: true,
   })
   const res = []
+  const { ext, page, layout } = getRegexPatterns(rootDir)
+
   fsReadDirSyncCache[directory].forEach((dirent) => {
-    // TODO: this should account for all page extensions
-    // not just js(x) and ts(x)
-    if (/(\.(j|t)sx?)$/.test(dirent.name)) {
-      if (/^page(\.(j|t)sx?)$/.test(dirent.name)) {
-        res.push(`${urlprefix}${dirent.name.replace(/^page(\.(j|t)sx?)$/, '')}`)
-      } else if (!/^layout(\.(j|t)sx?)$/.test(dirent.name)) {
-        res.push(`${urlprefix}${dirent.name.replace(/(\.(j|t)sx?)$/, '')}`)
+    if (ext.test(dirent.name)) {
+      if (page.test(dirent.name)) {
+        res.push(`${urlprefix}${dirent.name.replace(page, '')}`)
+      } else if (!layout.test(dirent.name)) {
+        res.push(`${urlprefix}${dirent.name.replace(ext, '')}`)
       }
     } else {
       const dirPath = path.join(directory, dirent.name)
-      if (dirent.isDirectory(dirPath) && !dirent.isSymbolicLink()) {
-        res.push(...parseUrlForPages(urlprefix + dirent.name + '/', dirPath))
+      if (dirent.isDirectory() && !dirent.isSymbolicLink()) {
+        res.push(
+          ...parseUrlForAppDir(`${urlprefix}${dirent.name}/`, dirPath, rootDir)
+        )
       }
     }
   })
@@ -136,13 +139,14 @@ export function normalizeAppPath(route: string) {
  */
 export function getUrlFromPagesDirectories(
   urlPrefix: string,
-  directories: string[]
+  directories: string[],
+  rootDir?: string
 ) {
   return Array.from(
     // De-duplicate similar pages across multiple directories.
     new Set(
       directories
-        .flatMap((directory) => parseUrlForPages(urlPrefix, directory))
+        .flatMap((directory) => parseUrlForPages(urlPrefix, directory, rootDir))
         .map(
           // Since the URLs are normalized we add `^` and `$` to the RegExp to make sure they match exactly.
           (url) => `^${normalizeURL(url)}$`
@@ -156,13 +160,14 @@ export function getUrlFromPagesDirectories(
 
 export function getUrlFromAppDirectory(
   urlPrefix: string,
-  directories: string[]
+  directories: string[],
+  rootDir?: string
 ) {
   return Array.from(
     // De-duplicate similar pages across multiple directories.
     new Set(
       directories
-        .map((directory) => parseUrlForAppDir(urlPrefix, directory))
+        .map((directory) => parseUrlForAppDir(urlPrefix, directory, rootDir))
         .flat()
         .map(
           // Since the URLs are normalized we add `^` and `$` to the RegExp to make sure they match exactly.
@@ -197,3 +202,135 @@ function ensureLeadingSlash(route: string) {
 function isGroupSegment(segment: string) {
   return segment[0] === '(' && segment.endsWith(')')
 }
+
+/**
+ * Get page extensions from next.config.js/mjs/ts
+ * Falls back to default extensions if config is not found or invalid
+ *
+ * Note: loading `next.config.ts` may require registering a TypeScript loader
+ * (`tsx/cjs` or `ts-node/register`), which has process-wide side effects.
+ */
+const getPageExtensions = (() => {
+  const cache = new Map<string, string[]>()
+
+  const fn = (cwd: string = process.cwd()): string[] => {
+    const cacheKey = path.resolve(cwd)
+    if (cache.has(cacheKey)) return cache.get(cacheKey)!
+
+    const fallback = ['tsx', 'ts', 'jsx', 'js']
+    const configFiles = ['next.config.js', 'next.config.mjs', 'next.config.ts']
+
+    for (const configFile of configFiles) {
+      try {
+        const configPath = path.resolve(cacheKey, configFile)
+
+        // Check if file exists before requiring
+        if (!fs.existsSync(configPath)) {
+          continue
+        }
+
+        // For .ts files, try to use tsx or ts-node if available
+        if (configFile.endsWith('.ts')) {
+          // Avoid registering a TypeScript loader if one is already present.
+          if (!require.extensions['.ts']) {
+            try {
+              // Try tsx first (faster)
+              ;(require('tsx/cjs') as typeof import('tsx/cjs'))
+            } catch {
+              try {
+                // Fallback to ts-node
+                ;(require('ts-node/register') as typeof import('ts-node/register'))
+              } catch {
+                // Skip .ts file if no TypeScript loader available
+                continue
+              }
+            }
+          }
+        }
+
+        const userConfig = require(configPath)
+        const config = userConfig.default || userConfig
+
+        if (
+          config &&
+          Array.isArray(config.pageExtensions) &&
+          config.pageExtensions.length > 0
+        ) {
+          const result = config.pageExtensions.map((ext: string) =>
+            ext.replace(/^\./, '')
+          )
+          cache.set(cacheKey, result)
+          return result
+        }
+      } catch (error) {
+        // Silently continue to next config file
+        continue
+      }
+    }
+
+    // No valid config found, use defaults
+    cache.set(cacheKey, fallback)
+    return fallback
+  }
+
+  // Exposed reset function for testing purposes
+  fn.reset = () => {
+    cache.clear()
+  }
+
+  return fn
+})()
+
+/**
+ * Get regex patterns for matching page files based on configured extensions
+ */
+const getRegexPatterns = (() => {
+  const cache = new Map<string, {
+    ext: RegExp
+    index: RegExp
+    page: RegExp
+    layout: RegExp
+  }>()
+
+  const fn = (cwd: string = process.cwd()) => {
+    const cacheKey = path.resolve(cwd)
+    if (cache.has(cacheKey)) return cache.get(cacheKey)!
+
+    const extensions = getPageExtensions(cacheKey)
+    const escaped = extensions.map((ext) =>
+      ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    )
+    const group = escaped.join('|')
+
+    const result = {
+      ext: new RegExp(`\\.(${group})$`),
+      index: new RegExp(`^index\\.(${group})$`),
+      page: new RegExp(`^page\\.(${group})$`),
+      layout: new RegExp(`^layout\\.(${group})$`),
+    }
+
+    cache.set(cacheKey, result)
+    return result
+  }
+
+  // Exposed reset function for testing purposes
+  fn.reset = () => {
+    cache.clear()
+  }
+
+  return fn
+})()
+
+/**
+ * Reset all caches - useful for testing
+ */
+function resetCaches() {
+  getPageExtensions.reset()
+  getRegexPatterns.reset()
+  // Clear fsReadDirSyncCache
+  Object.keys(fsReadDirSyncCache).forEach((key) => {
+    delete fsReadDirSyncCache[key]
+  })
+}
+
+export { getPageExtensions, getRegexPatterns, resetCaches }
