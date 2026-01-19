@@ -17,12 +17,11 @@ use turbopack_core::{
         ChunkableModuleReference, ChunkingContext, ChunkingType, ChunkingTypeOption,
         ModuleChunkItemIdExt,
     },
-    context::AssetContext,
     issue::{
         Issue, IssueExt, IssueSeverity, IssueSource, IssueStage, OptionIssueSource,
         OptionStyledString, StyledString,
     },
-    module::Module,
+    module::{Module, ModuleSideEffects},
     module_graph::binding_usage_info::ModuleExportUsageInfo,
     reference::ModuleReference,
     reference_type::{EcmaScriptModulesReferenceSubType, ImportWithType},
@@ -424,24 +423,14 @@ impl ModuleReference for EsmAssetReference {
         let request = Request::parse(self.request.clone().into());
 
         if let Some(TreeShakingMode::ModuleFragments) = self.tree_shaking_mode {
-            if let Some(ModulePart::Evaluation) = &self.export_name {
-                let side_effect_free_packages =
-                    self.module.asset_context().side_effect_free_packages();
-
-                if *self
-                    .module
-                    .is_marked_as_side_effect_free(side_effect_free_packages)
-                    .await?
-                {
-                    return Ok(ModuleResolveResult {
-                        primary: Box::new([(
-                            RequestKey::default(),
-                            ModuleResolveResultItem::Ignore,
-                        )]),
-                        affecting_sources: Default::default(),
-                    }
-                    .cell());
+            if let Some(ModulePart::Evaluation) = &self.export_name
+                && *self.module.side_effects().await? == ModuleSideEffects::SideEffectFree
+            {
+                return Ok(ModuleResolveResult {
+                    primary: Box::new([(RequestKey::default(), ModuleResolveResultItem::Ignore)]),
+                    affecting_sources: Default::default(),
                 }
+                .cell());
             }
 
             if let Request::Module { module, .. } = &*request.await?
@@ -539,14 +528,15 @@ impl ChunkableModuleReference for EsmAssetReference {
 
 impl EsmAssetReference {
     pub async fn code_generation(
-        self: Vc<Self>,
+        self: ResolvedVc<Self>,
         chunking_context: Vc<Box<dyn ChunkingContext>>,
         scope_hoisting_context: ScopeHoistingContext<'_>,
     ) -> Result<CodeGeneration> {
         let this = &*self.await?;
 
-        if *chunking_context
-            .is_reference_unused(Vc::upcast(self))
+        if chunking_context
+            .unused_references()
+            .contains_key(&ResolvedVc::upcast(self))
             .await?
         {
             return Ok(CodeGeneration::empty());

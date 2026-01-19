@@ -57,18 +57,22 @@ import {
   getServerModuleMap,
 } from './manifests-singleton'
 import { isNodeNextRequest, isWebNextRequest } from '../base-http/helpers'
+import { normalizeFilePath } from './segment-explorer-path'
+import type { ServerActionLogInfo } from '../dev/server-action-logger'
 import { RedirectStatusCode } from '../../client/components/redirect-status-code'
 import { synchronizeMutableCookies } from '../async-storage/request-store'
 import type { TemporaryReferenceSet } from 'react-server-dom-webpack/server'
 import { workUnitAsyncStorage } from '../app-render/work-unit-async-storage.external'
 import { InvariantError } from '../../shared/lib/invariant-error'
 import { executeRevalidates } from '../revalidation-utils'
-import { getRequestMeta } from '../request-meta'
+import { addRequestMeta, getRequestMeta } from '../request-meta'
 import { setCacheBustingSearchParam } from '../../client/components/router-reducer/set-cache-busting-search-param'
 import {
   ActionDidNotRevalidate,
   ActionDidRevalidateStaticAndDynamic,
 } from '../../shared/lib/action-revalidation-kind'
+
+const INLINE_ACTION_PREFIX = '$$RSC_SERVER_ACTION_'
 
 /**
  * Checks if the app has any server actions defined in any runtime.
@@ -160,7 +164,14 @@ function addRevalidationHeader(
   // TODO-APP: Currently paths are treated as tags, so the second element of the tuple
   // is always empty.
 
-  const isTagRevalidated = workStore.pendingRevalidatedTags?.length ? 1 : 0
+  // Only count tags without a profile (updateTag) as requiring client cache invalidation
+  // Tags with a profile (revalidateTag) use stale-while-revalidate and shouldn't
+  // trigger immediate client-side cache invalidation
+  const isTagRevalidated = workStore.pendingRevalidatedTags?.some(
+    (item) => item.profile === undefined
+  )
+    ? 1
+    : 0
   const isCookieRevalidated = getModifiedCookieValues(
     requestStore.mutableCookies
   ).length
@@ -858,8 +869,17 @@ export async function handleAction({
 
           temporaryReferences = createTemporaryReferenceSet()
 
-          const { Transform, pipeline } =
+          const { PassThrough, Readable, Transform } =
             require('node:stream') as typeof import('node:stream')
+          const { pipeline } =
+            require('node:stream/promises') as typeof import('node:stream/promises')
+
+          // If actionBody was stashed in request meta (from parsing the postponed
+          // state prefix in minimal mode), use it instead of req.body
+          const actionBodyFromMeta = getRequestMeta(req, 'actionBody')
+          const body: import('node:stream').Readable = actionBodyFromMeta
+            ? Readable.from(actionBodyFromMeta)
+            : req.body
 
           const defaultBodySizeLimit = '1 MB'
           const bodySizeLimit =
@@ -893,14 +913,6 @@ export async function handleAction({
             },
           })
 
-          const sizeLimitedBody = pipeline(
-            req.body,
-            sizeLimitTransform,
-            // Avoid unhandled errors from `pipeline()` by passing an empty completion callback.
-            // We'll propagate the errors properly when consuming the stream.
-            () => {}
-          )
-
           if (isMultipartAction) {
             if (isFetchAction) {
               // A fetch action with a multipart body.
@@ -919,23 +931,25 @@ export async function handleAction({
                 limits: { fieldSize: bodySizeLimitBytes },
               })
 
-              // We need to use `pipeline(one, two)` instead of `one.pipe(two)` to propagate size limit errors correctly.
-              pipeline(
-                sizeLimitedBody,
-                busboy,
-                // Avoid unhandled errors from `pipeline()` by passing an empty completion callback.
-                // We'll propagate the errors properly when consuming the stream.
-                () => {}
-              )
-
-              boundActionArguments = await decodeReplyFromBusboy(
-                busboy,
-                serverModuleMap,
-                { temporaryReferences }
-              )
+              const abortController = new AbortController()
+              try {
+                ;[, boundActionArguments] = await Promise.all([
+                  pipeline(body, sizeLimitTransform, busboy, {
+                    signal: abortController.signal,
+                  }),
+                  decodeReplyFromBusboy(busboy, serverModuleMap, {
+                    temporaryReferences,
+                  }),
+                ])
+              } catch (err) {
+                abortController.abort()
+                throw err
+              }
             } else {
               // Multipart POST, but not a fetch action.
               // Potentially an MPA action, we have to try decoding it to check.
+
+              const sizeLimitedBody = new PassThrough()
 
               // React doesn't yet publish a busboy version of decodeAction
               // so we polyfill the parsing of FormData.
@@ -943,23 +957,25 @@ export async function handleAction({
                 method: 'POST',
                 // @ts-expect-error
                 headers: { 'Content-Type': contentType },
-                body: new ReadableStream({
-                  start: (controller) => {
-                    sizeLimitedBody.on('data', (chunk) => {
-                      controller.enqueue(new Uint8Array(chunk))
-                    })
-                    sizeLimitedBody.on('end', () => {
-                      controller.close()
-                    })
-                    sizeLimitedBody.on('error', (err) => {
-                      controller.error(err)
-                    })
-                  },
-                }),
+                body: Readable.toWeb(
+                  sizeLimitedBody
+                ) as ReadableStream<Uint8Array>,
                 duplex: 'half',
               })
 
-              const formData = await fakeRequest.formData()
+              let formData: FormData
+              const abortController = new AbortController()
+              try {
+                ;[, formData] = await Promise.all([
+                  pipeline(body, sizeLimitTransform, sizeLimitedBody, {
+                    signal: abortController.signal,
+                  }),
+                  fakeRequest.formData(),
+                ])
+              } catch (err) {
+                abortController.abort()
+                throw err
+              }
 
               if (areAllActionIdsValid(formData, serverModuleMap) === false) {
                 // TODO: This can be from skew or manipulated input. We should handle this case
@@ -1023,10 +1039,17 @@ export async function handleAction({
             // In practice, this happens if `encodeReply` returned a string instead of FormData,
             // which can happen for very simple JSON-like values that don't need multiple flight rows.
 
+            const sizeLimitedBody = new PassThrough()
+
             const chunks: Buffer[] = []
-            for await (const chunk of sizeLimitedBody) {
-              chunks.push(Buffer.from(chunk))
-            }
+            await Promise.all([
+              pipeline(body, sizeLimitTransform, sizeLimitedBody),
+              (async () => {
+                for await (const chunk of sizeLimitedBody) {
+                  chunks.push(Buffer.from(chunk))
+                }
+              })(),
+            ])
 
             const actionData = Buffer.concat(chunks).toString('utf-8')
 
@@ -1061,6 +1084,37 @@ export async function handleAction({
             actionId!
           ]
 
+        // Log server action call in development
+        let logInfo: ServerActionLogInfo | null = null
+        if (process.env.NODE_ENV === 'development') {
+          const serverActionsManifest = getServerActionsManifest()
+          const runtime = process.env.NEXT_RUNTIME === 'edge' ? 'edge' : 'node'
+          const actionInfo = serverActionsManifest[runtime]?.[actionId!]
+
+          if (actionInfo) {
+            const isInlineAction =
+              actionInfo.exportedName?.startsWith(INLINE_ACTION_PREFIX)
+
+            const projectDir =
+              ctx.renderOpts.dir ||
+              (process.env.NEXT_RUNTIME === 'edge' ? '' : process.cwd())
+            const location = normalizeFilePath(projectDir, actionInfo.filename)
+
+            // Format function name for display
+            let functionName: string
+            if (isInlineAction) {
+              functionName = '<inline action>'
+            } else if (actionInfo.exportedName === 'default') {
+              functionName = 'default'
+            } else {
+              functionName = actionInfo.exportedName || '<action>'
+            }
+
+            logInfo = { functionName, args: boundActionArguments, location }
+          }
+        }
+
+        const startTime = performance.now()
         const { actionResult, skipPageRendering } =
           await executeActionAndPrepareForRender(
             actionHandler,
@@ -1070,22 +1124,37 @@ export async function handleAction({
             actionWasForwarded
           ).finally(() => {
             addRevalidationHeader(res, { workStore, requestStore })
+            if (logInfo) {
+              // Store server action log info to be logged after the request log
+              const duration = Math.round(performance.now() - startTime)
+              addRequestMeta(req, 'devServerActionLog', {
+                functionName: logInfo.functionName,
+                args: logInfo.args,
+                location: logInfo.location,
+                duration,
+              })
+            }
           })
 
         // For form actions, we need to continue rendering the page.
         if (isFetchAction) {
+          // If we skip page rendering, we need to ensure pending revalidates
+          // are awaited before closing the response. Otherwise, this will be
+          // done after rendering the page.
+          const maybeRevalidatesPromise = skipPageRendering
+            ? executeRevalidates(workStore)
+            : false
+
           return {
             type: 'done',
             result: await generateFlight(req, ctx, requestStore, {
               actionResult: Promise.resolve(actionResult),
               skipPageRendering,
               temporaryReferences,
-              // If we skip page rendering, we need to ensure pending
-              // revalidates are awaited before closing the response. Otherwise,
-              // this will be done after rendering the page.
-              waitUntil: skipPageRendering
-                ? executeRevalidates(workStore)
-                : undefined,
+              waitUntil:
+                maybeRevalidatesPromise === false
+                  ? undefined
+                  : maybeRevalidatesPromise,
             }),
           }
         } else {
