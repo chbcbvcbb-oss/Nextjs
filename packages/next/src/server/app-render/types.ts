@@ -160,7 +160,7 @@ export interface RenderOptsPartial {
     clientParamParsingOrigins: string[] | undefined
     dynamicOnHover: boolean
     optimisticRouting: boolean
-    inlineCss: boolean
+    inlineCss: boolean | 'shared'
     authInterrupts: boolean
 
     /**
@@ -221,3 +221,30 @@ export type RenderOpts = LoadComponentsReturnType<AppPageModule> &
   RequestLifecycleOpts
 
 export type PreloadCallbacks = (() => void)[]
+
+/**
+ * Collected inline CSS to be injected via ServerInsertedHTML.
+ * This avoids duplicating CSS in both the HTML (as <style> tags) and
+ * the RSC payload (serialized in <script> tags).
+ */
+export interface CollectedInlineCss {
+  styles: Array<{
+    href: string
+    content: string
+    precedence: string
+    nonce?: string
+  }>
+  /**
+   * CSS file paths that belong to the root layout.
+   * Used when `inlineCss: 'shared'` to only inline root layout CSS
+   * (which is guaranteed to be shared across all pages).
+   */
+  rootLayoutCSSPaths: Set<string>
+  /**
+   * The inlineCss mode from config.
+   * - `false` or `undefined`: No CSS inlining
+   * - `true`: Inline ALL CSS
+   * - `'shared'`: Only inline root layout CSS
+   */
+  inlineCssMode?: boolean | 'shared'
+}

@@ -1,5 +1,5 @@
 import type { ComponentType, ErrorInfo, JSX, ReactNode } from 'react'
-import type { RenderOpts, PreloadCallbacks } from './types'
+import type { RenderOpts, PreloadCallbacks, CollectedInlineCss } from './types'
 import type {
   ActionResult,
   DynamicParamTypesShort,
@@ -287,6 +287,12 @@ export type AppRenderContext = {
    * work unit store.
    */
   implicitTags: ImplicitTags
+  /**
+   * Collected inline CSS to be injected via ServerInsertedHTML.
+   * This avoids duplicating CSS in both the HTML (as <style> tags)
+   * and the RSC payload (serialized in <script> tags).
+   */
+  collectedInlineCss: CollectedInlineCss
 }
 
 function maybeAppendBuildIdToRSCPayload<T extends RSCPayload>(
@@ -2139,6 +2145,14 @@ async function renderToHTMLOrFlightImpl(
     res,
     sharedContext,
     implicitTags,
+    // Collector for inline CSS to be injected via ServerInsertedHTML.
+    // This prevents CSS from being duplicated in both HTML (as <style> tags)
+    // and RSC payload (serialized in <script> tags).
+    collectedInlineCss: {
+      styles: [],
+      rootLayoutCSSPaths: new Set(),
+      inlineCssMode: renderOpts.experimental.inlineCss,
+    },
   }
 
   getTracer().setRootSpanAttribute('next.route', pagePath)
@@ -2956,6 +2970,7 @@ async function renderToStream(
             serverCapturedErrors: allCapturedErrors,
             basePath,
             tracingMetadata: tracingMetadata,
+            collectedInlineCss: ctx.collectedInlineCss,
           })
           return await continueDynamicHTMLResume(htmlStream, {
             // If the prelude is empty (i.e. is no static shell), we should wait for initial HTML to be rendered
@@ -3019,6 +3034,7 @@ async function renderToStream(
         serverCapturedErrors: allCapturedErrors,
         basePath,
         tracingMetadata: tracingMetadata,
+        collectedInlineCss: ctx.collectedInlineCss,
       })
       /**
        * Rules of Static & Dynamic HTML:
@@ -3221,6 +3237,7 @@ async function renderToStream(
             serverCapturedErrors: [],
             basePath,
             tracingMetadata: tracingMetadata,
+            collectedInlineCss: ctx.collectedInlineCss,
           }),
           getServerInsertedMetadata,
           validateRootLayout: dev,
@@ -5230,6 +5247,7 @@ async function prerenderToStream(
         serverCapturedErrors: allCapturedErrors,
         basePath,
         tracingMetadata: tracingMetadata,
+        collectedInlineCss: ctx.collectedInlineCss,
       })
 
       const flightData = await streamToBuffer(reactServerResult.asStream())
@@ -5488,6 +5506,7 @@ async function prerenderToStream(
         serverCapturedErrors: allCapturedErrors,
         basePath,
         tracingMetadata: tracingMetadata,
+        collectedInlineCss: ctx.collectedInlineCss,
       })
 
       // After awaiting here we've waited for the entire RSC render to complete. Crucially this means
@@ -5724,6 +5743,7 @@ async function prerenderToStream(
         serverCapturedErrors: allCapturedErrors,
         basePath,
         tracingMetadata: tracingMetadata,
+        collectedInlineCss: ctx.collectedInlineCss,
       })
       return {
         digestErrorsMap: reactServerErrorsByDigest,
@@ -5917,6 +5937,7 @@ async function prerenderToStream(
             serverCapturedErrors: [],
             basePath,
             tracingMetadata: tracingMetadata,
+            collectedInlineCss: ctx.collectedInlineCss,
           }),
           getServerInsertedMetadata,
           validateRootLayout: dev,

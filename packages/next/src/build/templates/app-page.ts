@@ -731,7 +731,7 @@ export async function handler(
             optimisticRouting: Boolean(
               nextConfig.experimental.optimisticRouting
             ),
-            inlineCss: Boolean(nextConfig.experimental.inlineCss),
+            inlineCss: nextConfig.experimental.inlineCss ?? false,
             authInterrupts: Boolean(nextConfig.experimental.authInterrupts),
             clientTraceMetadata:
               nextConfig.experimental.clientTraceMetadata || ([] as any),
