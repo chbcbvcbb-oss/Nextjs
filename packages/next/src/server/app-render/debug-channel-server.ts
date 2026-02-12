@@ -1,44 +1,30 @@
-export type DebugChannelPair = {
-  serverSide: DebugChannelServer
-  clientSide: DebugChannelClient
+import type {
+  DebugChannelPair,
+  DebugChannelServer,
+  DebugChannelClient,
+} from './debug-channel-server.node'
+
+type DebugChannelRuntimeModule = {
+  createDebugChannel: () => DebugChannelPair | undefined
+  toNodeDebugChannel: (
+    webDebugChannel: DebugChannelServer
+  ) => import('node:stream').Writable
 }
 
-export type DebugChannelServer = {
-  readable?: ReadableStream<Uint8Array>
-  writable: WritableStream<Uint8Array>
+let debugChannelRuntimeModule: DebugChannelRuntimeModule
+
+if (process.env.NEXT_RUNTIME === 'edge') {
+  debugChannelRuntimeModule =
+    require('./debug-channel-server.web') as typeof import('./debug-channel-server.web')
+} else if (process.env.__NEXT_USE_NODE_STREAMS) {
+  debugChannelRuntimeModule =
+    require('./debug-channel-server.node') as typeof import('./debug-channel-server.node')
+} else {
+  debugChannelRuntimeModule =
+    require('./debug-channel-server.web') as typeof import('./debug-channel-server.web')
 }
-export type DebugChannelClient = {
-  readable: ReadableStream<Uint8Array>
-  writable?: WritableStream<Uint8Array>
-}
 
-export function createDebugChannel(): DebugChannelPair | undefined {
-  if (process.env.NODE_ENV === 'production') {
-    return undefined
-  }
+export const createDebugChannel = debugChannelRuntimeModule.createDebugChannel
+export const toNodeDebugChannel = debugChannelRuntimeModule.toNodeDebugChannel
 
-  let readableController: ReadableStreamDefaultController | undefined
-
-  let clientSideReadable = new ReadableStream<Uint8Array>({
-    start(controller) {
-      readableController = controller
-    },
-  })
-
-  return {
-    serverSide: {
-      writable: new WritableStream<Uint8Array>({
-        write(chunk) {
-          readableController?.enqueue(chunk)
-        },
-        close() {
-          readableController?.close()
-        },
-        abort(err) {
-          readableController?.error(err)
-        },
-      }),
-    },
-    clientSide: { readable: clientSideReadable },
-  }
-}
+export type { DebugChannelPair, DebugChannelServer, DebugChannelClient }
