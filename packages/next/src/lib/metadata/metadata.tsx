@@ -338,8 +338,13 @@ async function renderViewport(
     workStore
   )
 
-  const elements: Array<React.ReactNode> =
-    createViewportElements(resolvedViewport)
+  // Get manifest from static metadata
+  const manifestUrl = tree[2].metadata?.manifest
+
+  const elements: Array<React.ReactNode> = createViewportElements(
+    resolvedViewport,
+    manifestUrl
+  )
   return (
     <>
       {elements.map((el, index) => {
@@ -366,6 +371,6 @@ function createMetadataElements(metadata: ResolvedMetadata) {
   ])
 }
 
-function createViewportElements(viewport: ResolvedViewport) {
-  return MetaFilter([ViewportMeta({ viewport: viewport })])
+function createViewportElements(viewport: ResolvedViewport, manifest?: string) {
+  return MetaFilter([ViewportMeta({ viewport: viewport, manifest })])
 }

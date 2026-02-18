@@ -756,6 +756,36 @@ describe('app dir - metadata', () => {
       })
     })
 
+    it('should render manifest link in head even with async metadata', async () => {
+      const browser = await next.browser('/async-metadata-streaming')
+      const matchDom = createDomMatcher(browser)
+
+      // Wait for the page to load and metadata to stream
+      await browser.waitForElementByCss('#async-metadata-page')
+
+      // Wait for the title to be set (indicates async metadata has been applied)
+      await retry(async () => {
+        expect(await getTitle(browser)).toBe('Async Metadata Page')
+      })
+
+      // Check that manifest link is in the head with correct href
+      await matchDom('link', 'rel="manifest"', {
+        href: '/manifest.webmanifest',
+      })
+
+      // Verify it's specifically in the head, not the body
+      const headHasManifest = await browser.eval(`
+        document.head.querySelector('link[rel="manifest"][href="/manifest.webmanifest"]') !== null
+      `)
+      expect(headHasManifest).toBe(true)
+
+      // Ensure no manifest link in the body
+      const bodyHasManifest = await browser.eval(`
+        document.body.querySelector('link[rel="manifest"]') !== null
+      `)
+      expect(bodyHasManifest).toBe(false)
+    })
+
     if (isNextStart) {
       it('should build favicon.ico as a custom route', async () => {
         const appPathsManifest = JSON.parse(

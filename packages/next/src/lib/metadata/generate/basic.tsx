@@ -34,7 +34,15 @@ function resolveViewportLayout(viewport: Viewport) {
   return resolved
 }
 
-export function ViewportMeta({ viewport }: { viewport: ResolvedViewport }) {
+export function StaticMetadata({
+  viewport,
+  manifest,
+}: {
+  viewport: ResolvedViewport
+  manifest?: ResolvedMetadata['manifest']
+}) {
+  const manifestOrigin = manifest ? getOrigin(manifest) : undefined
+
   return MetaFilter([
     <meta charSet="utf-8" />,
     Meta({ name: 'viewport', content: resolveViewportLayout(viewport) }),
@@ -48,14 +56,23 @@ export function ViewportMeta({ viewport }: { viewport: ResolvedViewport }) {
         )
       : []),
     Meta({ name: 'color-scheme', content: viewport.colorScheme }),
+    manifest ? (
+      <link
+        rel="manifest"
+        href={manifest.toString()}
+        // If it's same origin, and it's a preview deployment,
+        // including credentials for manifest request.
+        crossOrigin={
+          !manifestOrigin && process.env.VERCEL_ENV === 'preview'
+            ? 'use-credentials'
+            : undefined
+        }
+      />
+    ) : null,
   ])
 }
 
 export function BasicMeta({ metadata }: { metadata: ResolvedMetadata }) {
-  const manifestOrigin = metadata.manifest
-    ? getOrigin(metadata.manifest)
-    : undefined
-
   return MetaFilter([
     metadata.title !== null && metadata.title.absolute ? (
       <title>{metadata.title.absolute}</title>
@@ -70,19 +87,6 @@ export function BasicMeta({ metadata }: { metadata: ResolvedMetadata }) {
           Meta({ name: 'author', content: author.name }),
         ])
       : []),
-    metadata.manifest ? (
-      <link
-        rel="manifest"
-        href={metadata.manifest.toString()}
-        // If it's same origin, and it's a preview deployment,
-        // including credentials for manifest request.
-        crossOrigin={
-          !manifestOrigin && process.env.VERCEL_ENV === 'preview'
-            ? 'use-credentials'
-            : undefined
-        }
-      />
-    ) : null,
     Meta({ name: 'generator', content: metadata.generator }),
     Meta({ name: 'keywords', content: metadata.keywords?.join(',') }),
     Meta({ name: 'referrer', content: metadata.referrer }),
