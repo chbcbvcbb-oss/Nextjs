@@ -44,6 +44,7 @@ import {
   TURBOPACK_CLIENT_MIDDLEWARE_MANIFEST,
   ROUTES_MANIFEST,
   PRERENDER_MANIFEST,
+  PREVIEW_PROPS_MANIFEST,
 } from '../../../shared/lib/constants'
 
 import { getMiddlewareRouteMatcher } from '../../../shared/lib/router/utils/middleware-route-matcher'
@@ -321,6 +322,16 @@ async function startWatcher(
     JSON.stringify(routesManifest)
   )
 
+  const previewPropsManifestPath = path.join(
+    distDir,
+    'server',
+    PREVIEW_PROPS_MANIFEST
+  )
+  await fs.promises.writeFile(
+    previewPropsManifestPath,
+    JSON.stringify(opts.fsChecker.previewProps, null, 2)
+  )
+
   const prerenderManifestPath = path.join(distDir, PRERENDER_MANIFEST)
   await fs.promises.writeFile(
     prerenderManifestPath,
@@ -330,7 +341,6 @@ async function startWatcher(
         routes: {},
         dynamicRoutes: {},
         notFoundRoutes: [],
-        preview: opts.fsChecker.previewProps,
       },
       null,
       2
