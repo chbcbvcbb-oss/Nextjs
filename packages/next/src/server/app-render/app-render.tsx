@@ -1556,6 +1556,99 @@ async function getErrorRSCPayload(
   } = ctx
 
   const serveStreamingMetadata = !!ctx.renderOpts.serveStreamingMetadata
+
+  // For 404 not-found errors, render the actual not-found page content (SSR)
+  // instead of empty HTML skeleton that requires client-side rendering
+  if (errorType === 'not-found') {
+    const notFoundLoaderTree = createNotFoundLoaderTree(tree)
+
+    const { Viewport, Metadata, MetadataOutlet } = createMetadataComponents({
+      tree: notFoundLoaderTree,
+      parsedQuery: query,
+      pathname: url.pathname,
+      metadataContext: createMetadataContext(ctx.renderOpts),
+      errorType: 'not-found',
+      getDynamicParamFromSegment,
+      workStore,
+      serveStreamingMetadata,
+    })
+
+    const injectedCSS = new Set<string>()
+    const injectedJS = new Set<string>()
+    const injectedFontPreloadTags = new Set<string>()
+    const preloadCallbacks: PreloadCallbacks = []
+
+    const seedData = await createComponentTree({
+      ctx,
+      loaderTree: notFoundLoaderTree,
+      parentParams: {},
+      injectedCSS,
+      injectedJS,
+      injectedFontPreloadTags,
+      rootLayoutIncluded: false,
+      missingSlots: undefined,
+      preloadCallbacks,
+      authInterrupts: ctx.renderOpts.experimental.authInterrupts,
+      MetadataOutlet,
+    })
+
+    const initialTree = createFlightRouterStateFromLoaderTree(
+      notFoundLoaderTree,
+      getDynamicParamFromSegment,
+      query
+    )
+
+    const initialHead = createElement(
+      Fragment,
+      {
+        key: flightDataPathHeadKey,
+      },
+      createElement(NonIndex, {
+        createElement,
+        pagePath: ctx.pagePath,
+        statusCode: ctx.res.statusCode,
+        isPossibleServerAction: ctx.isPossibleServerAction,
+      }),
+      createElement(Viewport, null),
+      process.env.NODE_ENV === 'development' &&
+        createElement('meta', {
+          name: 'next-error',
+          content: 'not-found',
+        }),
+      createElement(Metadata, null)
+    )
+
+    const { GlobalError, styles: globalErrorStyles } =
+      await getGlobalErrorStyles(tree, ctx)
+
+    const isPossiblyPartialHead =
+      workStore.isStaticGeneration &&
+      ctx.renderOpts.experimental.isRoutePPREnabled === true
+
+    return {
+      // Include preload callbacks for proper resource loading
+      P: createElement(Preloads, {
+        preloadCallbacks: preloadCallbacks,
+      }),
+      b: ctx.sharedContext.buildId,
+      c: prepareInitialCanonicalUrl(url),
+      q: getRenderedSearch(query),
+      m: undefined,
+      i: false,
+      f: [
+        [
+          initialTree,
+          seedData,
+          initialHead,
+          isPossiblyPartialHead,
+        ] as FlightDataPath,
+      ],
+      G: [GlobalError, globalErrorStyles],
+      S: workStore.isStaticGeneration,
+    } satisfies InitialRSCPayload
+  }
+
+  // For other errors (redirect, 403, 401, 500), use empty skeleton
   const { Viewport, Metadata } = createMetadataComponents({
     tree,
     parsedQuery: query,
@@ -1597,8 +1690,7 @@ async function getErrorRSCPayload(
     err = isError(ssrError) ? ssrError : new Error(ssrError + '')
   }
 
-  // For metadata notFound error there's no global not found boundary on top
-  // so we create a not found page with AppRouter
+  // For non-404 errors, create empty HTML skeleton
   const seedData: CacheNodeSeedData = [
     createElement(
       'html',
