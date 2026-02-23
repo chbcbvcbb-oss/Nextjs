@@ -524,6 +524,22 @@ impl TaskStorage {
         }
     }
 
+    /// Returns an iterator over persistent cells with their data (for size estimation).
+    pub fn iter_persistent_cells(
+        &self,
+    ) -> impl Iterator<Item = (CellId, &TypedSharedReference)> + '_ {
+        self.persistent_cell_data()
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(cell_id, data)| (*cell_id, data)))
+    }
+
+    /// Returns an iterator over transient cell IDs (no size data available).
+    pub fn iter_transient_cells(&self) -> impl Iterator<Item = CellId> + '_ {
+        self.transient_cell_data()
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(cell_id, _)| *cell_id))
+    }
+
     /// Clone only the fields for the specified category
     pub fn clone_category_snapshot(&self, category: SpecificTaskDataCategory) -> TaskStorage {
         match category {

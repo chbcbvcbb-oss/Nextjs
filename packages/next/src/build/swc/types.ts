@@ -7,6 +7,7 @@ import type {
   NapiSourceDiagnostic,
   NapiProjectOptions,
   NapiPartialProjectOptions,
+  NapiMemoryReport,
 } from './generated-native'
 
 export type { NapiTurboEngineOptions as TurboEngineOptions }
@@ -305,6 +306,8 @@ export interface Project {
   ): AsyncIterableIterator<TurbopackResult<CompilationEvent>>
 
   invalidateFileSystemCache(): Promise<void>
+
+  getMemoryReport(): NapiMemoryReport
 
   shutdown(): Promise<void>
 

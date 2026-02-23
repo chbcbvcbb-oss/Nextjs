@@ -472,6 +472,107 @@ export function getSourceMapMiddleware(project: Project) {
   }
 }
 
+export function getMemoryReportMiddleware(project: Project) {
+  return async function (
+    req: IncomingMessage,
+    res: ServerResponse,
+    next: () => void
+  ): Promise<void> {
+    const { pathname, searchParams } = new URL(req.url!, 'http://n')
+
+    if (pathname !== '/__nextjs_turbopack-memory') {
+      return next()
+    }
+
+    const format = searchParams.get('format') ?? 'json'
+
+    if (format !== 'json' && format !== 'markdown') {
+      return middlewareResponse.badRequest(
+        res,
+        `Invalid format "${format}". Expected "json" or "markdown".`
+      )
+    }
+
+    try {
+      const turbopackReport = project.getMemoryReport()
+
+      // Augment with Node.js process-level stats and uptime
+      const mem = process.memoryUsage()
+      const report = {
+        ...turbopackReport,
+        uptimeSecs: process.uptime(),
+        process: {
+          pid: process.pid,
+          nodeVersion: process.version,
+          rssBytes: mem.rss,
+          heapUsedBytes: mem.heapUsed,
+          heapTotalBytes: mem.heapTotal,
+          externalBytes: mem.external,
+        },
+      }
+
+      if (format === 'markdown') {
+        res.setHeader('Content-Type', 'text/markdown; charset=utf-8')
+        res.end(renderMemoryReportMarkdown(report))
+      } else {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify(report, null, 2))
+      }
+    } catch (cause) {
+      return middlewareResponse.internalServerError(
+        res,
+        new Error('Failed to collect memory report', { cause })
+      )
+    }
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes.toLocaleString('en-US')} B`
+  if (bytes < 1024 * 1024)
+    return `${(bytes / 1024).toLocaleString('en-US', { maximumFractionDigits: 1 })} KB`
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / 1024 / 1024).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toLocaleString('en-US', { maximumFractionDigits: 2 })} GB`
+}
+const formatCount = (n: number) => n.toLocaleString('en-US')
+
+function renderMemoryReportMarkdown(report: any): string {
+  let md = `# Turbopack Memory Report\n\n`
+  md += `Uptime: ${(report.uptimeSecs / 60).toFixed(1)} minutes  \n`
+  md += `PID: ${report.process.pid}\n\n`
+
+  md += `## Process Memory\n\n`
+  md += `| Metric | Value |\n|--------|------:|\n`
+  md += `| RSS | ${formatBytes(report.process.rssBytes)} |\n`
+  md += `| Node Heap Used | ${formatBytes(report.process.heapUsedBytes)} |\n`
+  md += `| Node Heap Total | ${formatBytes(report.process.heapTotalBytes)} |\n`
+  md += `| Node External | ${formatBytes(report.process.externalBytes)} |\n`
+  md += `| Rust Allocated | ${formatBytes(report.allocator.allocatedBytes)} |\n`
+
+  md += `\n## Tasks - ${formatCount(report.tasks.totalCount)} total, `
+  md += `${formatBytes(report.tasks.totalEstimatedSizeBytes)} estimated\n\n`
+  md += `| Function | Count | Est. Size |\n`
+  md += `|----------|------:|----------:|\n`
+  for (const fn_ of report.tasks.byFunction) {
+    md += `| \`${fn_.function}\` | ${formatCount(fn_.count)} | ${formatBytes(fn_.estimatedSizeBytes)} |\n`
+  }
+
+  md += `\n## Cells - ${formatCount(report.cells.totalCount)} total, `
+  md += `${formatBytes(report.cells.totalEstimatedSizeBytes)} estimated\n\n`
+  md += `| Type | Count | Est. Size |\n`
+  md += `|------|------:|----------:|\n`
+  for (const cell of report.cells.byType) {
+    const size =
+      cell.estimatedSizeBytes != null
+        ? formatBytes(cell.estimatedSizeBytes)
+        : 'N/A (transient)'
+    md += `| \`${cell.type}\` | ${formatCount(cell.count)} | ${size} |\n`
+  }
+
+  return md
+}
+
 export async function getOriginalStackFrames({
   project,
   projectPath,
