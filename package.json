@@ -206,6 +206,7 @@
     "execa": "2.0.3",
     "expect": "29.7.0",
     "expect-type": "0.14.2",
+    "experimental-fast-webstreams": "0.0.18",
     "express": "4.17.0",
     "faker": "5.5.3",
     "faunadb": "2.6.1",
@@ -308,7 +309,7 @@
     "yargs": "16.2.0"
   },
   "engines": {
-    "node": ">=20.9.0",
+    "node": ">=20.20.0",
     "pnpm": "9.6.0"
   },
   "packageManager": "pnpm@9.6.0",
