@@ -1,4 +1,4 @@
-use std::{borrow::Cow, future::Future};
+use std::{borrow::Cow, fmt::Display, future::Future};
 
 use anyhow::{Result, bail};
 use bincode::{Decode, Encode};
@@ -19,8 +19,9 @@ use turbo_tasks::{
     NonLocalValue, ResolvedVc, TaskInput, TryJoinIterExt, ValueDefault, Vc, trace::TraceRawVcs,
     util::WrapFuture,
 };
-use turbo_tasks_fs::FileSystemPath;
+use turbo_tasks_fs::{FileContent, FileSystemPath};
 use turbopack_core::{
+    asset::Asset,
     file_source::FileSource,
     ident::AssetIdent,
     issue::{
@@ -64,6 +65,17 @@ pub enum NextSegmentDynamic {
     ForceStatic,
 }
 
+impl Display for NextSegmentDynamic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NextSegmentDynamic::Auto => write!(f, "auto"),
+            NextSegmentDynamic::ForceDynamic => write!(f, "force-dynamic"),
+            NextSegmentDynamic::Error => write!(f, "error"),
+            NextSegmentDynamic::ForceStatic => write!(f, "force-static"),
+        }
+    }
+}
+
 #[derive(
     Default,
     PartialEq,
@@ -101,12 +113,23 @@ pub enum NextRevalidate {
     },
 }
 
+impl Display for NextRevalidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NextRevalidate::Never => write!(f, "never"),
+            NextRevalidate::ForceCache => write!(f, "force-cache"),
+            NextRevalidate::Frequency { seconds } => write!(f, "{}", seconds),
+        }
+    }
+}
+
 #[turbo_tasks::value(shared)]
 #[derive(Debug, Default, Clone)]
 pub struct NextSegmentConfig {
     pub dynamic: Option<NextSegmentDynamic>,
     pub dynamic_params: Option<bool>,
     pub revalidate: Option<NextRevalidate>,
+    pub max_duration: Option<u32>,
     pub fetch_cache: Option<NextSegmentFetchCache>,
     pub runtime: Option<NextRuntime>,
     pub preferred_region: Option<Vec<RcStr>>,
@@ -139,14 +162,20 @@ impl NextSegmentConfig {
             dynamic,
             dynamic_params,
             revalidate,
+            max_duration,
             fetch_cache,
             runtime,
             preferred_region,
-            ..
+            // Don't need merging
+            middleware_matcher: _,
+            generate_image_metadata: _,
+            generate_sitemaps: _,
+            generate_static_params: _,
         } = self;
         *dynamic = dynamic.or(parent.dynamic);
         *dynamic_params = dynamic_params.or(parent.dynamic_params);
         *revalidate = revalidate.or(parent.revalidate);
+        *max_duration = max_duration.or(parent.max_duration);
         *fetch_cache = fetch_cache.or(parent.fetch_cache);
         *runtime = runtime.or(parent.runtime);
         *preferred_region = preferred_region.take().or(parent.preferred_region.clone());
@@ -180,10 +209,15 @@ impl NextSegmentConfig {
             dynamic,
             dynamic_params,
             revalidate,
+            max_duration,
             fetch_cache,
             runtime,
             preferred_region,
-            ..
+            // Don't need merging
+            middleware_matcher: _,
+            generate_image_metadata: _,
+            generate_sitemaps: _,
+            generate_static_params: _,
         } = self;
         merge_parallel(dynamic, &parallel_config.dynamic, "dynamic")?;
         merge_parallel(
@@ -192,6 +226,7 @@ impl NextSegmentConfig {
             "dynamicParams",
         )?;
         merge_parallel(revalidate, &parallel_config.revalidate, "revalidate")?;
+        merge_parallel(max_duration, &parallel_config.max_duration, "maxDuration")?;
         merge_parallel(fetch_cache, &parallel_config.fetch_cache, "fetchCache")?;
         merge_parallel(runtime, &parallel_config.runtime, "runtime")?;
         merge_parallel(
@@ -200,6 +235,64 @@ impl NextSegmentConfig {
             "preferredRegion",
         )?;
         Ok(())
+    }
+
+    pub fn get_proxy_matchers(
+        &self,
+        has_i18n: bool,
+        has_i18n_locales: bool,
+        base_path: Option<&str>,
+    ) -> Option<Vec<ProxyMatcher>> {
+        self.middleware_matcher.as_ref().map(|matchers| {
+            matchers
+                .iter()
+                .map(|matcher| {
+                    let mut matcher = match matcher {
+                        MiddlewareMatcherKind::Str(matcher) => ProxyMatcher {
+                            original_source: matcher.as_str().into(),
+                            ..Default::default()
+                        },
+                        MiddlewareMatcherKind::Matcher(matcher) => matcher.clone(),
+                    };
+
+                    // Mirrors implementation in get-page-static-info.ts getMiddlewareMatchers
+                    let mut source = matcher.original_source.to_string();
+                    let is_root = source == "/";
+                    let has_locale = matcher.locale;
+
+                    if has_i18n_locales && has_locale {
+                        if is_root {
+                            source.clear();
+                        }
+                        source.insert_str(0, "/:nextInternalLocale((?!_next/)[^/.]{1,})");
+                    }
+
+                    if is_root {
+                        source.push('(');
+                        if has_i18n {
+                            source.push_str("|\\\\.json|");
+                        }
+                        source.push_str("/?index|/?index\\\\.json)?")
+                    } else {
+                        source.push_str("{(\\\\.json)}?")
+                    };
+
+                    source.insert_str(0, "/:nextData(_next/data/[^/]{1,})?");
+
+                    if let Some(base_path) = base_path.as_ref() {
+                        source.insert_str(0, base_path);
+                    }
+
+                    // TODO: The implementation of getMiddlewareMatchers outputs a regex here
+                    // using path-to-regexp. Currently there is no
+                    // equivalent of that so it post-processes
+                    // this value to the relevant regex in manifest-loader.ts
+                    matcher.regexp = Some(RcStr::from(source));
+
+                    matcher
+                })
+                .collect()
+        })
     }
 }
 
@@ -442,6 +535,7 @@ pub async fn parse_segment_config_from_source(
                             .await?
                         }
                         Decl::Fn(decl) => {
+                            println!("got decl fn: {:?}", Cow::Borrowed(decl.ident.sym.as_str()),);
                             parse(
                                 Cow::Borrowed(decl.ident.sym.as_str()),
                                 Some(Cow::Owned(Expr::Fn(FnExpr {
@@ -556,6 +650,16 @@ pub async fn parse_segment_config_from_source(
             .await?;
         }
     }
+
+    println!(
+        "Parsing segment config for {path}: {} {:#?}",
+        if let FileContent::Content(v) = source.content().file_content().owned().await? {
+            v.content().to_str()?.to_string()
+        } else {
+            panic!()
+        },
+        config
+    );
 
     Ok(config.cell())
 }
@@ -850,6 +954,32 @@ async fn parse_config_value(
                     //https://github.com/vercel/next.js/blob/cd46c221d2b7f796f963d2b81eea1e405023db23/packages/next/src/server/lib/patch-fetch.ts#L20
                 }
             }
+        }
+        "maxDuration" => {
+            let Some(value) = get_value() else {
+                return invalid_config(
+                    source,
+                    "maxDuration",
+                    span,
+                    rcstr!("It mustn't be reexported."),
+                    None,
+                    IssueSeverity::Error,
+                )
+                .await;
+            };
+
+            let JsValue::Constant(ConstantValue::Num(ConstantNumber(val))) = value else {
+                return invalid_config(
+                    source,
+                    "maxDuration",
+                    span,
+                    rcstr!("It needs to be a static number."),
+                    Some(&value),
+                    IssueSeverity::Error,
+                )
+                .await;
+            };
+            config.max_duration = Some(val as u32);
         }
         "fetchCache" => {
             let Some(value) = get_value() else {
@@ -1315,6 +1445,11 @@ pub async fn parse_segment_config_from_loader_tree(
 ) -> Result<Vc<NextSegmentConfig>> {
     let loader_tree = &*loader_tree.await?;
 
+    println!(
+        "parse_segment_config_from_loader_tree {} {} {:#?}",
+        loader_tree.page, loader_tree.segment, loader_tree.modules.page
+    );
+
     Ok(parse_segment_config_from_loader_tree_internal(loader_tree)
         .await?
         .cell())
@@ -1323,7 +1458,23 @@ pub async fn parse_segment_config_from_loader_tree(
 async fn parse_segment_config_from_loader_tree_internal(
     loader_tree: &AppPageLoaderTree,
 ) -> Result<NextSegmentConfig> {
-    let mut config = NextSegmentConfig::default();
+    let modules = &loader_tree.modules;
+
+    let mut config = if let Some(module) = &modules.page {
+        let source = Vc::upcast(FileSource::new(module.clone()));
+        parse_segment_config_from_source(source, ParseSegmentMode::App)
+            .owned()
+            .await?
+    } else {
+        NextSegmentConfig::default()
+    };
+
+    println!(
+        "parse_segment_config_from_loader_tree_internal start {} {:?} {:#?}",
+        loader_tree.page,
+        modules.page,
+        config.generate_static_params.is_some()
+    );
 
     let parallel_configs = loader_tree
         .parallel_routes
@@ -1338,20 +1489,26 @@ async fn parse_segment_config_from_loader_tree_internal(
         config.apply_parallel_config(&tree)?;
     }
 
-    let modules = &loader_tree.modules;
-    for path in [
-        modules.page.clone(),
-        modules.default.clone(),
-        modules.layout.clone(),
-    ]
-    .into_iter()
-    .flatten()
+    for path in [modules.default.clone(), modules.layout.clone()]
+        .into_iter()
+        .flatten()
     {
         let source = Vc::upcast(FileSource::new(path.clone()));
-        config.apply_parent_config(
-            &*parse_segment_config_from_source(source, ParseSegmentMode::App).await?,
+        let x = &*parse_segment_config_from_source(source, ParseSegmentMode::App).await?;
+        println!(
+            "parse_segment_config_from_loader_tree_internal apply {} {:?} {:#?}",
+            loader_tree.page,
+            path,
+            config.generate_static_params.is_some()
         );
+        config.apply_parent_config(x);
     }
+
+    println!(
+        "parse_segment_config_from_loader_tree_internal result {} {:#?}",
+        loader_tree.page,
+        config.generate_static_params.is_some()
+    );
 
     Ok(config)
 }
