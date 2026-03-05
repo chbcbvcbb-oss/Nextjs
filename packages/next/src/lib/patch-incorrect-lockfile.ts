@@ -11,7 +11,7 @@ let registryConfig: ReturnType<typeof getRegistry> | undefined
 
 async function fetchPkgInfo(pkg: string) {
   if (!registryConfig) registryConfig = getRegistry()
-  const { url: registry, authToken } = registryConfig
+  const { registry, authToken } = registryConfig
   const headers: HeadersInit = authToken
     ? { Authorization: `Bearer ${authToken}` }
     : {}

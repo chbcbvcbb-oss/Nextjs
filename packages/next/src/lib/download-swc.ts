@@ -34,9 +34,10 @@ async function extractBinary(
       `${tarFileName}.temp-${Date.now()}`
     )
 
-    const { url: registry, authToken } = getRegistry()
+    const { registry, authToken } = getRegistry()
 
     const downloadUrl = `${registry}${pkgName}/-/${tarFileName}`
+
     const headers: HeadersInit = authToken
       ? { Authorization: `Bearer ${authToken}` }
       : {}

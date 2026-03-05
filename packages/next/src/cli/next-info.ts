@@ -102,7 +102,7 @@ async function printInfo() {
   let versionInfo
 
   try {
-    const { url: registry, authToken } = getRegistry()
+    const { registry, authToken } = getRegistry()
     const headers: HeadersInit = authToken
       ? { Authorization: `Bearer ${authToken}` }
       : {}
