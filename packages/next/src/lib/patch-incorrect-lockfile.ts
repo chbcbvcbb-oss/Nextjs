@@ -5,13 +5,17 @@ import findUp from 'next/dist/compiled/find-up'
 import { optionalDependencies as nextOptionalDeps } from 'next/package.json'
 import type { UnwrapPromise } from './coalesced-function'
 import { isCI } from '../server/ci-info'
-import { getRegistry } from './helpers/get-registry'
+import { getRegistry, getRegistryAuthToken } from './helpers/get-registry'
 
 let registry: string | undefined
 
 async function fetchPkgInfo(pkg: string) {
   if (!registry) registry = getRegistry()
-  const res = await fetch(`${registry}${pkg}`)
+  const authToken = getRegistryAuthToken(registry)
+  const headers: HeadersInit = authToken
+    ? { Authorization: `Bearer ${authToken}` }
+    : {}
+  const res = await fetch(`${registry}${pkg}`, { headers })
 
   if (!res.ok) {
     throw new Error(

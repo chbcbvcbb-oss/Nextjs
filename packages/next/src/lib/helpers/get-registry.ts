@@ -42,43 +42,47 @@ export function getRegistry(baseDir: string = process.cwd()) {
   return registry
 }
 
-
 /**
- * Returns the auth token for the given registry URL, if configured.
- * Reads from .npmrc via `<pkg-manager> config get`.
+ * Returns the auth token for the given registry URL, if configured
+ * in the user's package manager config (e.g., .npmrc).
+ * @returns The auth token string, or undefined if not configured.
  */
 export function getRegistryAuthToken(
   registryUrl: string,
   baseDir: string = process.cwd()
 ): string | undefined {
+  const pkgManager = getPkgManager(baseDir)
+  // x-ref: https://github.com/vercel/next.js/pull/68522
+  const resolvedFlags = pkgManager === 'npm' ? '--no-workspaces' : ''
+
   let scope: string
   try {
     const url = new URL(registryUrl)
     scope = `//${url.host}${url.pathname}`
+    if (!scope.endsWith('/')) scope += '/'
   } catch {
     return undefined
   }
-  if (!scope.endsWith('/')) scope += '/'
-
-  const pkgManager = getPkgManager(baseDir)
-  const resolvedFlags = pkgManager === 'npm' ? '--no-workspaces' : ''
 
   try {
-    const token = execSync(
+    const output = execSync(
       `${pkgManager} config get "${scope}:_authToken" ${resolvedFlags}`,
       {
         env: {
           ...process.env,
           NODE_OPTIONS: getFormattedNodeOptionsWithoutInspect(),
         },
-        stdio: ['pipe', 'pipe', 'ignore'],
       }
     )
       .toString()
       .trim()
 
-    if (token && token !== 'undefined') return token
-  } catch {}
+    if (output && output !== 'undefined') {
+      return output
+    }
+  } catch {
+    // Auth token is not required — fall through to return undefined
+  }
 
   return undefined
 }
