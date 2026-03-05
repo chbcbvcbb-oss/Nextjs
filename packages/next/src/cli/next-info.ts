@@ -6,7 +6,7 @@ import childProcess from 'child_process'
 import { bold, cyan, yellow } from '../lib/picocolors'
 import { PHASE_INFO } from '../shared/lib/constants'
 import loadConfig from '../server/config'
-import { getRegistry, getRegistryAuthToken } from '../lib/helpers/get-registry'
+import { getRegistry } from '../lib/helpers/get-registry'
 import { parseVersionInfo } from '../server/dev/parse-version-info'
 import { getStaleness } from '../next-devtools/shared/version-staleness'
 import { warn } from '../build/output/log'
@@ -102,8 +102,7 @@ async function printInfo() {
   let versionInfo
 
   try {
-    const registry = getRegistry()
-    const authToken = getRegistryAuthToken(registry)
+    const { url: registry, authToken } = getRegistry()
     const headers: HeadersInit = authToken
       ? { Authorization: `Bearer ${authToken}` }
       : {}

@@ -2,12 +2,18 @@ import { execSync } from 'child_process'
 import { getPkgManager } from './get-pkg-manager'
 import { getFormattedNodeOptionsWithoutInspect } from '../../server/lib/utils'
 
+export interface RegistryConfig {
+  url: string
+  authToken?: string
+}
+
 /**
- * Returns the package registry using the user's package manager.
+ * Returns the package registry URL and auth token using the user's
+ * package manager config (e.g., .npmrc).
  * The URL will have a trailing slash.
- * @default https://registry.npmjs.org/
+ * @default url https://registry.npmjs.org/
  */
-export function getRegistry(baseDir: string = process.cwd()) {
+export function getRegistry(baseDir: string = process.cwd()): RegistryConfig {
   const pkgManager = getPkgManager(baseDir)
   // Since `npm config` command fails in npm workspace to prevent workspace config conflicts,
   // add `--no-workspaces` flag to run under the context of the root project only.
@@ -15,7 +21,7 @@ export function getRegistry(baseDir: string = process.cwd()) {
   // x-ref: https://github.com/vercel/next.js/issues/47121#issuecomment-1499044345
   // x-ref: https://github.com/npm/statusboard/issues/371#issue-920669998
   const resolvedFlags = pkgManager === 'npm' ? '--no-workspaces' : ''
-  let registry = `https://registry.npmjs.org/`
+  let url = `https://registry.npmjs.org/`
 
   try {
     const output = execSync(
@@ -31,7 +37,7 @@ export function getRegistry(baseDir: string = process.cwd()) {
       .trim()
 
     if (output.startsWith('http')) {
-      registry = output.endsWith('/') ? output : `${output}/`
+      url = output.endsWith('/') ? output : `${output}/`
     }
   } catch (err) {
     throw new Error(`Failed to get registry from "${pkgManager}".`, {
@@ -39,32 +45,14 @@ export function getRegistry(baseDir: string = process.cwd()) {
     })
   }
 
-  return registry
-}
-
-/**
- * Returns the auth token for the given registry URL, if configured
- * in the user's package manager config (e.g., .npmrc).
- * @returns The auth token string, or undefined if not configured.
- */
-export function getRegistryAuthToken(
-  registryUrl: string,
-  baseDir: string = process.cwd()
-): string | undefined {
-  const pkgManager = getPkgManager(baseDir)
-  // x-ref: https://github.com/vercel/next.js/pull/68522
-  const resolvedFlags = pkgManager === 'npm' ? '--no-workspaces' : ''
-
-  let scope: string
+  // Read the auth token for this registry, if configured.
+  // npmrc format: //registry.example.com/path/:_authToken=TOKEN
+  let authToken: string | undefined
   try {
-    const url = new URL(registryUrl)
-    scope = `//${url.host}${url.pathname}`
+    const parsed = new URL(url)
+    let scope = `//${parsed.host}${parsed.pathname}`
     if (!scope.endsWith('/')) scope += '/'
-  } catch {
-    return undefined
-  }
 
-  try {
     const output = execSync(
       `${pkgManager} config get "${scope}:_authToken" ${resolvedFlags}`,
       {
@@ -78,11 +66,11 @@ export function getRegistryAuthToken(
       .trim()
 
     if (output && output !== 'undefined') {
-      return output
+      authToken = output
     }
   } catch {
-    // Auth token is not required — fall through to return undefined
+    // Auth token is not required — proceed without it
   }
 
-  return undefined
+  return { url, authToken }
 }
