@@ -41,3 +41,44 @@ export function getRegistry(baseDir: string = process.cwd()) {
 
   return registry
 }
+
+
+/**
+ * Returns the auth token for the given registry URL, if configured.
+ * Reads from .npmrc via `<pkg-manager> config get`.
+ */
+export function getRegistryAuthToken(
+  registryUrl: string,
+  baseDir: string = process.cwd()
+): string | undefined {
+  let scope: string
+  try {
+    const url = new URL(registryUrl)
+    scope = `//${url.host}${url.pathname}`
+  } catch {
+    return undefined
+  }
+  if (!scope.endsWith('/')) scope += '/'
+
+  const pkgManager = getPkgManager(baseDir)
+  const resolvedFlags = pkgManager === 'npm' ? '--no-workspaces' : ''
+
+  try {
+    const token = execSync(
+      `${pkgManager} config get "${scope}:_authToken" ${resolvedFlags}`,
+      {
+        env: {
+          ...process.env,
+          NODE_OPTIONS: getFormattedNodeOptionsWithoutInspect(),
+        },
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }
+    )
+      .toString()
+      .trim()
+
+    if (token && token !== 'undefined') return token
+  } catch {}
+
+  return undefined
+}

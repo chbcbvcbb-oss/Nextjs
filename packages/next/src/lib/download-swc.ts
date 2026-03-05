@@ -4,7 +4,7 @@ import * as Log from '../build/output/log'
 import { x } from 'next/dist/compiled/tar'
 const { WritableStream } =
   require('node:stream/web') as typeof import('node:stream/web')
-import { getRegistry } from './helpers/get-registry'
+import { getRegistry, getRegistryAuthToken } from './helpers/get-registry'
 import { getCacheDirectory } from './helpers/get-cache-directory'
 
 const MAX_VERSIONS_TO_CACHE = 8
@@ -35,10 +35,14 @@ async function extractBinary(
     )
 
     const registry = getRegistry()
+    const authToken = getRegistryAuthToken(registry)
 
     const downloadUrl = `${registry}${pkgName}/-/${tarFileName}`
+    const headers: HeadersInit = authToken
+      ? { Authorization: `Bearer ${authToken}` }
+      : {}
 
-    await fetch(downloadUrl).then((res) => {
+    await fetch(downloadUrl, { headers }).then((res) => {
       const { ok, body } = res
       if (!ok || !body) {
         Log.error(`Failed to download swc package from ${downloadUrl}`)
