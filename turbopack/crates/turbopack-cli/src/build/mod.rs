@@ -15,37 +15,36 @@ use turbo_tasks_backend::{
 };
 use turbo_tasks_fs::FileSystem;
 use turbo_unix_path::join_path;
-use turbopack::{
-    css::chunk::CssChunkType, ecmascript::chunk::EcmascriptChunkType,
-    global_module_ids::get_global_module_id_strategy,
-};
+use turbopack::global_module_ids::get_global_module_id_strategy;
 use turbopack_browser::{BrowserChunkingContext, ContentHashing, CurrentChunkMethod};
 use turbopack_cli_utils::issue::{ConsoleUi, LogOptions};
 use turbopack_core::{
     asset::Asset,
     chunk::{
-        ChunkingConfig, ChunkingContext, ChunkingContextExt, EvaluatableAsset, EvaluatableAssets,
-        MangleType, MinifyType, SourceMapsType, availability_info::AvailabilityInfo,
+        ChunkingConfig, ChunkingContext, ChunkingContextExt, EvaluatableAsset, MangleType,
+        MinifyType, SourceMapsType, availability_info::AvailabilityInfo,
     },
     environment::{BrowserEnvironment, Environment, ExecutionEnvironment, NodeJsEnvironment},
     ident::AssetIdent,
     issue::{IssueReporter, IssueSeverity, handle_issues},
     module::Module,
     module_graph::{
-        ModuleGraph,
+        ModuleGraph, SingleModuleGraph,
+        binding_usage_info::compute_binding_usage_info,
         chunk_group_info::{ChunkGroup, ChunkGroupEntry},
-        export_usage::compute_export_usage_info,
     },
     output::{OutputAsset, OutputAssets, OutputAssetsWithReferenced},
     reference_type::{EntryReferenceSubType, ReferenceType},
     resolve::{
-        origin::{PlainResolveOrigin, ResolveOriginExt},
+        origin::{PlainResolveOrigin, ResolveOrigin, ResolveOriginExt},
         parse::Request,
     },
 };
+use turbopack_css::chunk::CssChunkType;
+use turbopack_ecmascript::chunk::EcmascriptChunkType;
 use turbopack_ecmascript_runtime::RuntimeType;
 use turbopack_env::dotenv::load_env;
-use turbopack_node::execution_context::ExecutionContext;
+use turbopack_node::{child_process_backend, execution_context::ExecutionContext};
 use turbopack_nodejs::NodeJsChunkingContext;
 
 use crate::{
@@ -225,7 +224,9 @@ async fn build_internal(
         NodeEnv::Production => RuntimeType::Production,
     };
 
-    let compile_time_info = get_client_compile_time_info(browserslist_query.clone(), node_env);
+    let compile_time_info =
+        get_client_compile_time_info(browserslist_query.clone(), node_env, false);
+    let node_backend = child_process_backend();
     let execution_context = ExecutionContext::new(
         root_path.clone(),
         Vc::upcast(
@@ -246,6 +247,7 @@ async fn build_internal(
             .build(),
         ),
         load_env(root_path.clone()),
+        node_backend,
     );
 
     let asset_context = get_client_asset_context(
@@ -287,7 +289,7 @@ async fn build_internal(
                 let ty = ReferenceType::Entry(EntryReferenceSubType::Undefined);
                 let request = request_vc.await?;
                 origin
-                    .resolve_asset(request_vc, origin.resolve_options(ty.clone()).await?, ty)
+                    .resolve_asset(request_vc, origin.resolve_options(), ty)
                     .await?
                     .first_module()
                     .await?
@@ -305,17 +307,23 @@ async fn build_internal(
     .instrument(tracing::info_span!("resolve entries"))
     .await?;
 
-    let module_graph = ModuleGraph::from_modules(
-        Vc::cell(vec![ChunkGroupEntry::Entry(entries.clone())]),
+    let single_graph = SingleModuleGraph::new_with_entries(
+        ResolvedVc::cell(vec![ChunkGroupEntry::Entry(entries.clone())]),
         false,
+        true,
     );
-    let module_id_strategy = ResolvedVc::upcast(
-        get_global_module_id_strategy(module_graph)
-            .to_resolved()
-            .await?,
-    );
-    let export_usage = compute_export_usage_info(module_graph.to_resolved().await?)
-        .resolve_strongly_consistent()
+    let mut module_graph = ModuleGraph::from_single_graph(single_graph);
+    let binding_usage = compute_binding_usage_info(module_graph, true);
+    let unused_references = binding_usage
+        .connect()
+        .unused_references()
+        .to_resolved()
+        .await?;
+    module_graph =
+        ModuleGraph::from_single_graph_without_unused_references(single_graph, binding_usage);
+    let module_graph = module_graph.connect();
+    let module_id_strategy = get_global_module_id_strategy(module_graph)
+        .to_resolved()
         .await?;
 
     let chunking_context: Vc<Box<dyn ChunkingContext>> = match target {
@@ -342,7 +350,8 @@ async fn build_internal(
             )
             .source_maps(source_maps_type)
             .module_id_strategy(module_id_strategy)
-            .export_usage(Some(export_usage))
+            .export_usage(Some(binding_usage.connect().to_resolved().await?))
+            .unused_references(unused_references)
             .current_chunk_method(CurrentChunkMethod::DocumentCurrentScript)
             .minify_type(minify_type);
 
@@ -391,7 +400,8 @@ async fn build_internal(
             )
             .source_maps(source_maps_type)
             .module_id_strategy(module_id_strategy)
-            .export_usage(Some(export_usage))
+            .export_usage(Some(binding_usage.connect().to_resolved().await?))
+            .unused_references(unused_references)
             .minify_type(minify_type);
 
             match *node_env.await? {
@@ -461,7 +471,7 @@ async fn build_internal(
                                                         .unwrap(),
                                                 )?
                                                 .with_extension("entry.js"),
-                                            EvaluatableAssets::one(*ecmascript),
+                                            ChunkGroup::Entry(vec![ResolvedVc::upcast(ecmascript)]),
                                             module_graph,
                                             OutputAssets::empty(),
                                             OutputAssets::empty(),

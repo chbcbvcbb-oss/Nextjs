@@ -1,14 +1,14 @@
 use anyhow::Result;
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{FxIndexSet, ResolvedVc, ValueToString, Vc};
-use turbo_tasks_fs::FileSystemPath;
+use turbo_tasks_fs::{FileContent, FileSystemPath};
 use turbopack_core::{
     asset::{Asset, AssetContent},
     chunk::{Chunk, ChunkingContext, OutputChunk, OutputChunkRuntimeInfo},
     ident::AssetIdent,
     introspect::{Introspectable, IntrospectableChildren},
     output::{OutputAsset, OutputAssetsReference, OutputAssetsWithReferenced},
-    source_map::{GenerateSourceMap, OptionStringifiedSourceMap, SourceMapAsset},
+    source_map::{GenerateSourceMap, SourceMapAsset},
     version::VersionedContent,
 };
 use turbopack_ecmascript::chunk::EcmascriptChunk;
@@ -17,6 +17,8 @@ use crate::{BrowserChunkingContext, ecmascript::content::EcmascriptBrowserChunkC
 
 /// Development Ecmascript chunk.
 #[turbo_tasks::value(shared)]
+#[derive(ValueToString)]
+#[value_to_string("Ecmascript Dev Chunk")]
 pub struct EcmascriptBrowserChunk {
     chunking_context: ResolvedVc<BrowserChunkingContext>,
     chunk: ResolvedVc<EcmascriptChunk>,
@@ -53,14 +55,6 @@ impl EcmascriptBrowserChunk {
         self.chunk
             .ident()
             .with_modifier(rcstr!("ecmascript dev chunk"))
-    }
-}
-
-#[turbo_tasks::value_impl]
-impl ValueToString for EcmascriptBrowserChunk {
-    #[turbo_tasks::function]
-    fn to_string(&self) -> Vc<RcStr> {
-        Vc::cell(rcstr!("Ecmascript Dev Chunk"))
     }
 }
 
@@ -157,12 +151,12 @@ impl Asset for EcmascriptBrowserChunk {
 #[turbo_tasks::value_impl]
 impl GenerateSourceMap for EcmascriptBrowserChunk {
     #[turbo_tasks::function]
-    fn generate_source_map(self: Vc<Self>) -> Vc<OptionStringifiedSourceMap> {
+    fn generate_source_map(self: Vc<Self>) -> Vc<FileContent> {
         self.own_content().generate_source_map()
     }
 
     #[turbo_tasks::function]
-    fn by_section(self: Vc<Self>, section: RcStr) -> Vc<OptionStringifiedSourceMap> {
+    fn by_section(self: Vc<Self>, section: RcStr) -> Vc<FileContent> {
         self.own_content().by_section(section)
     }
 }

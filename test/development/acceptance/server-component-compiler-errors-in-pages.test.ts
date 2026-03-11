@@ -55,14 +55,14 @@ describe('Error Overlay for server components compiler errors in pages', () => {
       expect(next.normalizeTestDirContent(await session.getRedboxSource()))
         .toMatchInlineSnapshot(`
        "./components/Comp.js (1:1)
-       Ecmascript file had an error
+       You're importing a component that needs "next/headers". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
        > 1 | import { cookies } from 'next/headers'
            | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
          2 |
          3 | export default function Page() {
          4 |   return <p>hello world</p>
 
-       You're importing a component that needs "next/headers". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+       Ecmascript file had an error
 
        Import traces:
          Browser:
@@ -81,7 +81,6 @@ describe('Error Overlay for server components compiler errors in pages', () => {
         )
       ).toMatchInlineSnapshot(`
        "./components/Comp.js
-         × Module build failed:
          ╰─▶   × Error:   x You're importing a component that needs "next/headers". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
                │   |
                │
@@ -139,14 +138,14 @@ describe('Error Overlay for server components compiler errors in pages', () => {
       expect(next.normalizeTestDirContent(await session.getRedboxSource()))
         .toMatchInlineSnapshot(`
        "./components/Comp.js (1:1)
-       Ecmascript file had an error
+       You're importing a component that needs "server-only". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
        > 1 | import 'server-only'
            | ^^^^^^^^^^^^^^^^^^^^
          2 |
          3 | export default function Page() {
          4 |   return 'hello world'
 
-       You're importing a component that needs "server-only". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+       Ecmascript file had an error
 
        Import traces:
          Browser:
@@ -165,7 +164,6 @@ describe('Error Overlay for server components compiler errors in pages', () => {
         )
       ).toMatchInlineSnapshot(`
        "./components/Comp.js
-         × Module build failed:
          ╰─▶   × Error:   x You're importing a component that needs "server-only". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
                │   |
                │
@@ -225,14 +223,14 @@ describe('Error Overlay for server components compiler errors in pages', () => {
       expect(next.normalizeTestDirContent(await session.getRedboxSource()))
         .toMatchInlineSnapshot(`
        "./components/Comp.js (1:10)
-       Ecmascript file had an error
+       You're importing a component that needs "after". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
        > 1 | import { after } from 'next/server'
            |          ^^^^^
          2 |
          3 | export default function Page() {
          4 |   return 'hello world'
 
-       You're importing a component that needs "after". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+       Ecmascript file had an error
 
        Import traces:
          Browser:
@@ -251,7 +249,6 @@ describe('Error Overlay for server components compiler errors in pages', () => {
         )
       ).toMatchInlineSnapshot(`
        "./components/Comp.js
-         × Module build failed:
          ╰─▶   × Error:   x You're importing a component that needs "after". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
                │   |
                │
@@ -320,14 +317,14 @@ describe('Error Overlay for server components compiler errors in pages', () => {
       expect(next.normalizeTestDirContent(await session.getRedboxSource()))
         .toMatchInlineSnapshot(`
        "./components/Comp.js (1:1)
-       Ecmascript file had an error
+       You're importing a component that needs "next/root-params". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
        > 1 | import { foo } from 'next/root-params'
            | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
          2 |
          3 | export default function Page() {
          4 |   return 'hello world'
 
-       You're importing a component that needs "next/root-params". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+       Ecmascript file had an error
 
        Import traces:
          Browser:
@@ -346,7 +343,6 @@ describe('Error Overlay for server components compiler errors in pages', () => {
         )
       ).toMatchInlineSnapshot(`
        "./components/Comp.js
-         × Module build failed:
          ╰─▶   × Error:   x You're importing a component that needs "next/root-params". That only works in a Server Component which is not supported in the pages/ directory. Read more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
                │   |
                │

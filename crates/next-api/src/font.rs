@@ -1,8 +1,8 @@
 use anyhow::Result;
 use next_core::next_manifests::NextFontManifest;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{ResolvedVc, Vc};
-use turbo_tasks_fs::{File, FileSystemPath};
+use turbo_tasks::{ResolvedVc, Vc, turbofmt};
+use turbo_tasks_fs::{File, FileContent, FileSystemPath};
 use turbopack_core::{
     asset::{Asset, AssetContent},
     output::{OutputAsset, OutputAssets, OutputAssetsReference},
@@ -77,8 +77,7 @@ impl Asset for FontManifest {
         let next_font_manifest = if !has_fonts {
             Default::default()
         } else if *app_dir {
-            let dir_str = dir.value_to_string().await?;
-            let page_path = format!("{dir_str}{original_name}").into();
+            let page_path = turbofmt!("{dir}{original_name}").await?;
 
             NextFontManifest {
                 app: [(page_path, font_paths)].into_iter().collect(),
@@ -94,7 +93,10 @@ impl Asset for FontManifest {
         };
 
         Ok(AssetContent::file(
-            File::from(serde_json::to_string_pretty(&next_font_manifest)?).into(),
+            FileContent::Content(File::from(serde_json::to_string_pretty(
+                &next_font_manifest,
+            )?))
+            .cell(),
         ))
     }
 }
