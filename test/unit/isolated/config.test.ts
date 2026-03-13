@@ -223,4 +223,87 @@ describe('config', () => {
       expect(config.turbopack.root).toBe(config.outputFileTracingRoot)
     })
   })
+
+  describe('Environment variable support for allowedDevOrigins', () => {
+    it('Should merge NEXT_ALLOWED_DEV_ORIGINS with config allowedDevOrigins', async () => {
+      const originalEnv = process.env.NEXT_ALLOWED_DEV_ORIGINS
+      process.env.NEXT_ALLOWED_DEV_ORIGINS = 'example.com,*.test.com'
+
+      try {
+        const config = await loadConfig(PHASE_DEVELOPMENT_SERVER, '<rootDir>', {
+          customConfig: {
+            allowedDevOrigins: ['localhost'],
+          },
+        })
+        expect(config.allowedDevOrigins).toContain('localhost')
+        expect(config.allowedDevOrigins).toContain('example.com')
+        expect(config.allowedDevOrigins).toContain('*.test.com')
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.NEXT_ALLOWED_DEV_ORIGINS
+        } else {
+          process.env.NEXT_ALLOWED_DEV_ORIGINS = originalEnv
+        }
+      }
+    })
+
+    it('Should parse NEXT_ALLOWED_DEV_ORIGINS when no config value exists', async () => {
+      const originalEnv = process.env.NEXT_ALLOWED_DEV_ORIGINS
+      process.env.NEXT_ALLOWED_DEV_ORIGINS = 'example.com,another.com'
+
+      try {
+        const config = await loadConfig(PHASE_DEVELOPMENT_SERVER, '<rootDir>', {
+          customConfig: {},
+        })
+        expect(config.allowedDevOrigins).toContain('example.com')
+        expect(config.allowedDevOrigins).toContain('another.com')
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.NEXT_ALLOWED_DEV_ORIGINS
+        } else {
+          process.env.NEXT_ALLOWED_DEV_ORIGINS = originalEnv
+        }
+      }
+    })
+
+    it('Should trim whitespace from NEXT_ALLOWED_DEV_ORIGINS values', async () => {
+      const originalEnv = process.env.NEXT_ALLOWED_DEV_ORIGINS
+      process.env.NEXT_ALLOWED_DEV_ORIGINS = '  example.com  ,  another.com  '
+
+      try {
+        const config = await loadConfig(PHASE_DEVELOPMENT_SERVER, '<rootDir>', {
+          customConfig: {},
+        })
+        expect(config.allowedDevOrigins).toContain('example.com')
+        expect(config.allowedDevOrigins).toContain('another.com')
+        expect(config.allowedDevOrigins).not.toContain('  example.com  ')
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.NEXT_ALLOWED_DEV_ORIGINS
+        } else {
+          process.env.NEXT_ALLOWED_DEV_ORIGINS = originalEnv
+        }
+      }
+    })
+
+    it('Should handle empty NEXT_ALLOWED_DEV_ORIGINS', async () => {
+      const originalEnv = process.env.NEXT_ALLOWED_DEV_ORIGINS
+      process.env.NEXT_ALLOWED_DEV_ORIGINS = ''
+
+      try {
+        const config = await loadConfig(PHASE_DEVELOPMENT_SERVER, '<rootDir>', {
+          customConfig: {
+            allowedDevOrigins: ['localhost'],
+          },
+        })
+        expect(config.allowedDevOrigins).toEqual(['localhost'])
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.NEXT_ALLOWED_DEV_ORIGINS
+        } else {
+          process.env.NEXT_ALLOWED_DEV_ORIGINS = originalEnv
+        }
+      }
+    })
+  })
 })

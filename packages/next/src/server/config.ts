@@ -380,6 +380,20 @@ function assignDefaultsAndValidate(
     },
   }
 
+  // Parse and merge environment variables for allowed dev origins
+  if (process.env.NEXT_ALLOWED_DEV_ORIGINS) {
+    const envOrigins = process.env.NEXT_ALLOWED_DEV_ORIGINS.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+
+    if (envOrigins.length > 0) {
+      result.allowedDevOrigins = [
+        ...(result.allowedDevOrigins || []),
+        ...envOrigins,
+      ]
+    }
+  }
+
   // ensure correct default is set for api-resolver revalidate handling
   if (!result.experimental.trustHostHeader && ciEnvironment.hasNextSupport) {
     result.experimental.trustHostHeader = true
