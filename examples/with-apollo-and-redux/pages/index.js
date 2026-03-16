@@ -47,10 +47,15 @@ export async function getStaticProps() {
     lastUpdate: Date.now(),
   });
 
-  await apolloClient.query({
-    query: ALL_POSTS_QUERY,
-    variables: allPostsQueryVars,
-  });
+  try {
+    await apolloClient.query({
+      query: ALL_POSTS_QUERY,
+      variables: allPostsQueryVars,
+    });
+  } catch (_) {
+    // If the API is unavailable, fall back to an empty initial state.
+    // The PostList component will surface the error via its own useQuery call.
+  }
 
   return {
     props: {
