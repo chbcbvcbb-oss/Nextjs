@@ -42,7 +42,7 @@ function getImageOptimizerPath(basePath: string) {
 function requestInternalDevScript(
   appPort: string | number,
   basePath: string,
-  referer: string
+  options: { referer?: string } = {}
 ) {
   return fetchViaHTTP(
     appPort,
@@ -50,7 +50,7 @@ function requestInternalDevScript(
     undefined,
     {
       headers: {
-        referer,
+        ...(options.referer ? { referer: options.referer } : {}),
         'sec-fetch-mode': 'no-cors',
         'sec-fetch-site': 'cross-site',
       },
@@ -78,12 +78,50 @@ function requestInternalDevMiddleware(
   )
 }
 
+function expectBlockedDevResourceMessage(
+  output: string,
+  options: {
+    resourcePath: string
+    source?: string
+    suggestionHost?: string
+    unknownSource?: true
+    opaqueOrigin?: true
+  }
+) {
+  expect(output).toContain(options.resourcePath)
+  expect(output).toContain(
+    'Cross-origin access to Next.js dev resources is blocked by default for safety.'
+  )
+
+  if (options.opaqueOrigin) {
+    expect(output).toContain('from a privacy-sensitive or opaque origin')
+    expect(output).not.toContain("allowedDevOrigins: ['null']")
+    return
+  }
+
+  if (options.unknownSource) {
+    expect(output).toContain('from an unknown source')
+    expect(output).toContain(
+      'This request did not include an allowlistable source host.'
+    )
+    return
+  }
+
+  expect(output).toContain(`from "${options.source}"`)
+  expect(output).toContain(
+    'To allow this host in development, add it to "allowedDevOrigins" in next.config.js and restart the dev server:'
+  )
+  expect(output).toContain(
+    `allowedDevOrigins: ['${options.suggestionHost ?? options.source}']`
+  )
+}
+
 describe.each(['', '/docs'])(
   'allowed-dev-origins, basePath: %p',
   (basePath: string) => {
     let next: NextInstance
 
-    describe('warn mode', () => {
+    describe('default blocking', () => {
       beforeAll(async () => {
         next = await createNext({
           files: {
@@ -112,7 +150,7 @@ describe.each(['', '/docs'])(
       })
       afterAll(() => next.destroy())
 
-      it('should warn about WebSocket from cross-site', async () => {
+      it('should block WebSocket from cross-site', async () => {
         const { server, port } = await createHostServer()
         try {
           const websocketSnippet = `(() => {
@@ -134,47 +172,56 @@ describe.each(['', '/docs'])(
           const browser = await webdriver(`http://127.0.0.1:${port}`, '/about')
           await browser.eval(websocketSnippet)
           await retry(async () => {
-            expect(await browser.elementByCss('#status').text()).toBe(
-              'connected'
-            )
+            expect(await browser.elementByCss('#status').text()).toBe('error')
           })
 
           // ensure different host is blocked
           await browser.get(`https://example.vercel.sh/`)
           await browser.eval(websocketSnippet)
           await retry(async () => {
-            expect(await browser.elementByCss('#status').text()).toBe(
-              'connected'
-            )
+            expect(await browser.elementByCss('#status').text()).toBe('error')
           })
 
-          expect(next.cliOutput).toContain('Cross origin request detected from')
+          expectBlockedDevResourceMessage(next.cliOutput, {
+            resourcePath: withBasePath(basePath, '/_next/webpack-hmr'),
+            source: 'example.vercel.sh',
+          })
         } finally {
           server.close()
         }
       })
 
-      it('should warn about loading scripts from cross-site', async () => {
+      it('should block loading scripts from cross-site', async () => {
         const port = await findPort()
 
         const mismatchedPortRes = await requestInternalDevScript(
           next.appPort,
           basePath,
-          `http://127.0.0.1:${port}/about`
+          {
+            referer: `http://127.0.0.1:${port}/about`,
+          }
         )
-        expect(mismatchedPortRes.status).toBe(200)
+        expect(mismatchedPortRes.status).toBe(403)
 
         const differentHostRes = await requestInternalDevScript(
           next.appPort,
           basePath,
-          'https://example.vercel.sh/about'
+          {
+            referer: 'https://example.vercel.sh/about',
+          }
         )
-        expect(differentHostRes.status).toBe(200)
+        expect(differentHostRes.status).toBe(403)
 
-        expect(next.cliOutput).toContain('Cross origin request detected from')
+        expectBlockedDevResourceMessage(next.cliOutput, {
+          resourcePath: withBasePath(
+            basePath,
+            '/_next/static/chunks/pages/_app.js'
+          ),
+          source: 'example.vercel.sh',
+        })
       })
 
-      it('should warn about loading internal middleware from cross-site', async () => {
+      it('should block loading internal middleware from cross-site', async () => {
         const port = await findPort()
 
         const mismatchedPortRes = await requestInternalDevMiddleware(
@@ -182,16 +229,89 @@ describe.each(['', '/docs'])(
           basePath,
           `http://127.0.0.1:${port}`
         )
-        expect(mismatchedPortRes.status).toBe(204)
+        expect(mismatchedPortRes.status).toBe(403)
 
         const differentHostRes = await requestInternalDevMiddleware(
           next.appPort,
           basePath,
           'https://example.vercel.sh'
         )
-        expect(differentHostRes.status).toBe(204)
+        expect(differentHostRes.status).toBe(403)
 
-        expect(next.cliOutput).toContain('Cross origin request detected from')
+        expectBlockedDevResourceMessage(next.cliOutput, {
+          resourcePath: withBasePath(basePath, '/__nextjs_error_feedback'),
+          source: 'example.vercel.sh',
+        })
+      })
+
+      it('should allow same-site requests without an origin header', async () => {
+        const res = await fetchViaHTTP(
+          next.appPort,
+          withBasePath(basePath, '/_next/static/chunks/pages/_app.js')
+        )
+        expect(res.status).toBe(200)
+      })
+    })
+
+    describe('configured but not allowlisted origins', () => {
+      beforeAll(async () => {
+        next = await createNext({
+          files: {
+            pages: new FileRef(join(__dirname, 'misc/pages')),
+            public: new FileRef(join(__dirname, 'misc/public')),
+          },
+          nextConfig: {
+            basePath,
+            allowedDevOrigins: ['127.0.0.1'],
+          },
+        })
+
+        await next.render(withBasePath(basePath, '/404'))
+
+        await retry(async () => {
+          const res = await fetchViaHTTP(
+            next.appPort,
+            withBasePath(basePath, '/_next/static/chunks/pages/_app.js')
+          )
+          expect(res.status).toBe(200)
+        })
+      })
+      afterAll(() => next.destroy())
+
+      it('should block websocket requests from configured but non-allowlisted hosts', async () => {
+        const { server, port } = await createHostServer()
+        try {
+          const websocketSnippet = `(() => {
+              const statusEl = document.createElement('p')
+              statusEl.id = 'status'
+              document.querySelector('body').appendChild(statusEl)
+
+              const ws = new WebSocket("${next.url}${withBasePath(basePath, '/_next/webpack-hmr')}")
+
+              ws.addEventListener('error', () => {
+                statusEl.innerText = 'error'
+              })
+              ws.addEventListener('open', () => {
+                statusEl.innerText = 'connected'
+              })
+            })()`
+
+          const browser = await webdriver(`http://127.0.0.1:${port}`, '/about')
+          await browser.get(`https://example.vercel.sh/`)
+          await browser.eval(websocketSnippet)
+          await retry(async () => {
+            expect(await browser.elementByCss('#status').text()).toBe('error')
+          })
+        } finally {
+          server.close()
+        }
+      })
+
+      it('should block no-cors requests from configured but non-allowlisted hosts', async () => {
+        const res = await requestInternalDevScript(next.appPort, basePath, {
+          referer: 'https://example.vercel.sh/about',
+        })
+        expect(res.status).toBe(403)
       })
     })
 
@@ -271,16 +391,33 @@ describe.each(['', '/docs'])(
         const mismatchedPortRes = await requestInternalDevScript(
           next.appPort,
           basePath,
-          `http://127.0.0.1:${port}/about`
+          {
+            referer: `http://127.0.0.1:${port}/about`,
+          }
         )
         expect(mismatchedPortRes.status).toBe(200)
 
         const differentHostRes = await requestInternalDevScript(
           next.appPort,
           basePath,
-          'https://example.vercel.sh/about'
+          {
+            referer: 'https://example.vercel.sh/about',
+          }
         )
         expect(differentHostRes.status).toBe(200)
+      })
+
+      it('should block no-cors requests without a referer even when origins are configured', async () => {
+        const res = await requestInternalDevScript(next.appPort, basePath)
+        expect(res.status).toBe(403)
+
+        expectBlockedDevResourceMessage(next.cliOutput, {
+          resourcePath: withBasePath(
+            basePath,
+            '/_next/static/chunks/pages/_app.js'
+          ),
+          unknownSource: true,
+        })
       })
 
       it('should allow loading internal middleware from configured cross-site', async () => {
@@ -372,6 +509,11 @@ describe.each(['', '/docs'])(
 
           await retry(async () => {
             expect(await browser.elementByCss('#status').text()).toBe('error')
+          })
+
+          expectBlockedDevResourceMessage(next.cliOutput, {
+            resourcePath: withBasePath(basePath, '/_next/webpack-hmr'),
+            opaqueOrigin: true,
           })
         } finally {
           await new Promise<void>((res) => {

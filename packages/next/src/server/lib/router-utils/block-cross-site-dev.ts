@@ -4,23 +4,72 @@ import { parseUrl } from '../../../lib/url'
 import { warnOnce } from '../../../build/output/log'
 import { isCsrfOriginAllowed } from '../../app-render/csrf-protection'
 
-function warnOrBlockRequest(
-  res: ServerResponse | Duplex,
-  origin: string | undefined,
-  mode: 'warn' | 'block'
-): boolean {
-  const originString = origin ? `from ${origin}` : ''
-  if (mode === 'warn') {
-    warnOnce(
-      `Cross origin request detected ${originString} to /_next/* resource. In a future major version of Next.js, you will need to explicitly configure "allowedDevOrigins" in next.config to allow this.\nRead more: https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins`
-    )
+const allowedDevOriginsDocs =
+  'https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins'
 
-    return false
+function getBlockedResourcePath(req: IncomingMessage): string {
+  return parseUrl(req.url ?? '')?.pathname ?? req.url ?? '/_next/*'
+}
+
+function formatBlockedCrossSiteMessage(
+  source: string | undefined,
+  resourcePath: string
+): string {
+  const lines = [
+    `Blocked cross-origin request to Next.js dev resource ${resourcePath}${getBlockedSourceDescription(source)}.`,
+    'Cross-origin access to Next.js dev resources is blocked by default for safety.',
+  ]
+
+  // `source` has 3 meanings here:
+  // - `'null'`: browser explicitly sent `Origin: null` for an opaque/sandboxed origin
+  // - hostname string: we parsed an allowlistable host from Origin/Referer
+  // - `undefined` (and effectively empty string): the request did not include a usable host
+  if (source === 'null') {
+    lines.push(
+      '',
+      'This request came from a privacy-sensitive or opaque origin, so Next.js cannot determine which host to allow.',
+      'If you need it to succeed, load the dev server from a normal origin and add that host to "allowedDevOrigins".'
+    )
+  } else if (source) {
+    lines.push(
+      '',
+      'To allow this host in development, add it to "allowedDevOrigins" in next.config.js and restart the dev server:',
+      '',
+      '// next.config.js',
+      'module.exports = {',
+      `  allowedDevOrigins: ['${source}'],`,
+      '}'
+    )
+  } else {
+    lines.push(
+      '',
+      'This request did not include an allowlistable source host.',
+      'If you need it to succeed, make sure the browser sends an Origin or Referer from a host listed in "allowedDevOrigins".'
+    )
   }
 
-  warnOnce(
-    `Blocked cross-origin request ${originString} to /_next/* resource. To allow this, configure "allowedDevOrigins" in next.config\nRead more: https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins`
-  )
+  lines.push('', `Read more: ${allowedDevOriginsDocs}`)
+  return lines.join('\n')
+}
+
+function getBlockedSourceDescription(source: string | undefined): string {
+  if (source === 'null') {
+    return ' from a privacy-sensitive or opaque origin'
+  }
+
+  if (source) {
+    return ` from "${source}"`
+  }
+
+  return ' from an unknown source'
+}
+
+function blockRequest(
+  req: IncomingMessage,
+  res: ServerResponse | Duplex,
+  source: string | undefined
+): boolean {
+  warnOnce(formatBlockedCrossSiteMessage(source, getBlockedResourcePath(req)))
 
   if ('statusCode' in res) {
     res.statusCode = 403
@@ -69,14 +118,10 @@ export const blockCrossSiteDEV = (
   allowedDevOrigins: string[] | undefined,
   hostname: string | undefined
 ): boolean => {
-  // in the future, these will be blocked by default when allowed origins aren't configured.
-  // for now, we warn when allowed origins aren't configured
-  const mode = typeof allowedDevOrigins === 'undefined' ? 'warn' : 'block'
-
   const allowedOrigins = [
     '*.localhost',
     'localhost',
-    ...(allowedDevOrigins || []),
+    ...(allowedDevOrigins ?? []),
   ]
   if (hostname) {
     allowedOrigins.push(hostname)
@@ -104,7 +149,7 @@ export const blockCrossSiteDEV = (
       return false
     }
 
-    return warnOrBlockRequest(res, refererHostname, mode)
+    return blockRequest(req, res, refererHostname)
   }
 
   // ensure websocket requests are only fulfilled from allowed origin
@@ -124,6 +169,6 @@ export const blockCrossSiteDEV = (
   return (
     originLowerCase !== undefined &&
     !isCsrfOriginAllowed(originLowerCase, allowedOrigins) &&
-    warnOrBlockRequest(res, originLowerCase, mode)
+    blockRequest(req, res, originLowerCase)
   )
 }
