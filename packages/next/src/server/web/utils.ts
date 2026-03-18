@@ -44,8 +44,15 @@ export function fromNodeOutgoingHttpHeaders(
 
 // Inline charCode whitespace check — avoids regex allocation per character.
 function isWhitespace(code: number): boolean {
-  // space, tab, newline, carriage return, form feed
-  return code === 32 || code === 9 || code === 10 || code === 13 || code === 12
+  // space, tab, newline, vertical tab, form feed, carriage return
+  return (
+    code === 32 ||
+    code === 9 ||
+    code === 10 ||
+    code === 11 ||
+    code === 12 ||
+    code === 13
+  )
 }
 
 export function splitCookiesString(cookiesString: string) {
@@ -58,7 +65,10 @@ export function splitCookiesString(cookiesString: string) {
   var cookiesSeparatorFound
 
   function skipWhitespace() {
-    while (pos < cookiesString.length && isWhitespace(cookiesString.charCodeAt(pos))) {
+    while (
+      pos < cookiesString.length &&
+      isWhitespace(cookiesString.charCodeAt(pos))
+    ) {
       pos += 1
     }
     return pos < cookiesString.length
@@ -89,7 +99,10 @@ export function splitCookiesString(cookiesString: string) {
         }
 
         // currently special character
-        if (pos < cookiesString.length && cookiesString.charCodeAt(pos) === 61 /* = */) {
+        if (
+          pos < cookiesString.length &&
+          cookiesString.charCodeAt(pos) === 61 /* = */
+        ) {
           // we found cookies separator
           cookiesSeparatorFound = true
           // pos is inside the next cookie, so back up and return it.
