@@ -125,6 +125,7 @@ export interface ServerPatchAction {
   seed: NavigationSeed | null
   mpa: boolean
   navigateType: 'push' | 'replace'
+  scrollBehavior: ScrollBehavior
 }
 
 /**
