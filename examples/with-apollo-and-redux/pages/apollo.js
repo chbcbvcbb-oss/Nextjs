@@ -16,15 +16,10 @@ const ApolloPage = () => (
 export async function getStaticProps() {
   const apolloClient = initializeApollo();
 
-  try {
-    await apolloClient.query({
+  await apolloClient.query({
       query: ALL_POSTS_QUERY,
       variables: allPostsQueryVars,
     });
-  } catch (_) {
-    // If the API is unavailable, fall back to an empty initial state.
-    // The PostList component will surface the error via its own useQuery call.
-  }
 
   return {
     props: {
