@@ -17,9 +17,9 @@ export async function getStaticProps() {
   const apolloClient = initializeApollo();
 
   await apolloClient.query({
-      query: ALL_POSTS_QUERY,
-      variables: allPostsQueryVars,
-    });
+    query: ALL_POSTS_QUERY,
+    variables: allPostsQueryVars,
+  });
 
   return {
     props: {
