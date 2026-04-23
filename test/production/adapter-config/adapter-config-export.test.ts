@@ -1,37 +1,19 @@
 import fs from 'fs'
+import path from 'path'
 import type { NextAdapter } from 'next'
 import { nextTestSetup } from 'e2e-utils'
 import { version as nextVersion } from 'next/package.json'
 
 process.env.TEST_EXPORT = '1'
+process.env.TEST_CACHE_COMPONENTS = '1'
 
 describe('adapter-config export', () => {
   const { next } = nextTestSetup({
-    files: __dirname,
+    files: path.join(__dirname, 'fixtures/export'),
     skipStart: true,
   })
 
   it('should call onBuildComplete with correct context', async () => {
-    const nonExportFiles = [
-      'app/node-app/page.tsx',
-      'app/node-route/route.ts',
-      'app/edge-route/route.ts',
-      'app/isr-route/route.ts',
-      'app/isr-route/[slug]/route.ts',
-      'app/edge-app/page.tsx',
-      'pages/api/edge-pages.ts',
-      'pages/api/node-pages.ts',
-      'pages/edge-pages/index.tsx',
-      'pages/node-pages/index.tsx',
-      'app/node-app/[slug]/page.tsx',
-      'app/node-app/@dialog/default.tsx',
-      'app/node-app/@dialog/[slug]/page.tsx',
-    ]
-
-    for (const file of nonExportFiles) {
-      await next.remove(file)
-    }
-
     await next.build()
     expect(next.cliOutput).toContain('onBuildComplete called')
 
@@ -91,5 +73,45 @@ describe('adapter-config export', () => {
       shouldNormalizeNextData: expect.toBeBoolean(),
       rsc: expect.toBeObject(),
     })
+
+    const staticExportFallbackRoutes = routing.dynamicRoutes.filter((route) =>
+      route.destination?.startsWith('/docs/isr-app/__fallback')
+    )
+    expect(staticExportFallbackRoutes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: '/isr-app/[slug]',
+          destination: '/docs/isr-app/__fallback/__route_0',
+          has: [
+            {
+              type: 'header',
+              key: 'accept',
+              value: '.*text/html.*',
+            },
+          ],
+        }),
+        expect.objectContaining({
+          source: '/isr-app/[slug]/comments',
+          destination: '/docs/isr-app/__fallback/__route_1',
+          has: [
+            {
+              type: 'header',
+              key: 'accept',
+              value: '.*text/html.*',
+            },
+          ],
+        }),
+      ])
+    )
+
+    const staticFilePathnames = new Set(
+      outputs.staticFiles.map((output) => output.pathname)
+    )
+    expect(staticFilePathnames.has('/docs/isr-app/__fallback/__route_0')).toBe(
+      true
+    )
+    expect(staticFilePathnames.has('/docs/isr-app/__fallback/__route_1')).toBe(
+      true
+    )
   })
 })
