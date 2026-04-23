@@ -239,6 +239,8 @@ import { createServerInsertedMetadata } from './metadata-insertion/create-server
 import { getPreviouslyRevalidatedTags } from '../server-utils'
 import { executeRevalidates } from '../revalidation-utils'
 import {
+  diffModuleLoadingMetrics,
+  getModuleLoadingMetricsSnapshot,
   trackPendingChunkLoad,
   trackPendingImport,
   trackPendingModules,
@@ -563,6 +565,75 @@ function findPrerenderHTTPErrorBoundaryTree(
   }
 
   return boundaryTree
+}
+
+function waitForPrerenderWarmup(
+  spanType:
+    | NextNodeServerSpan.cacheMissWarmup
+    | NextNodeServerSpan.serverPrerenderWarmup
+    | NextNodeServerSpan.clientPrerenderWarmup,
+  cacheSignal: CacheSignal,
+  context: 'response' | 'validation'
+) {
+  const startMetrics = getModuleLoadingMetricsSnapshot()
+  return getTracer().trace(
+    spanType,
+    {
+      attributes: {
+        'next.prerenderWarmupContext': context,
+      },
+    },
+    async (span) => {
+      await cacheSignal.cacheReady()
+
+      if (span?.isRecording()) {
+        const metrics = diffModuleLoadingMetrics(
+          startMetrics,
+          getModuleLoadingMetricsSnapshot()
+        )
+
+        span.setAttribute(
+          'next.clientComponentAsyncRequireCount',
+          metrics.clientComponentAsyncRequireCount
+        )
+        span.setAttribute(
+          'next.clientComponentChunkLoadCount',
+          metrics.clientComponentChunkLoadCount
+        )
+        span.setAttribute(
+          'next.clientComponentDynamicImportCount',
+          metrics.clientComponentDynamicImportCount
+        )
+      }
+    }
+  )
+}
+
+function startClientComponentWarmupSpan() {
+  // We create a fresh signal per request and subscribe it to the shared module-loading
+  // signal so the span measures "module warmup from now until settled" for this render.
+  const cacheSignal = new CacheSignal()
+  const span = getTracer().startSpan(NextNodeServerSpan.clientComponentWarmup)
+
+  trackPendingModules(cacheSignal)
+
+  // Detached on purpose. We wait one task so initial imports/chunk loads can register,
+  // then end the span once the subscribed module-loading signal has gone idle.
+  void waitAtLeastOneReactRenderTask()
+    .then(() => cacheSignal.cacheReady())
+    .then(() => {
+      if (span.isRecording()) {
+        span.end()
+      }
+    })
+}
+
+function traceHtmlShellWarmup<T>(fn: () => Promise<T>) {
+  return getTracer().trace(NextNodeServerSpan.htmlShellWarmup, fn)
+}
+
+function traceHtmlAllReady<T>(allReady: Promise<T>) {
+  return getTracer().trace(NextNodeServerSpan.htmlAllReady, () => allReady)
 }
 
 /**
@@ -1810,7 +1881,11 @@ async function prospectiveRuntimeServerPrerender(
 
   // Wait for all caches to be finished filling and for async imports to resolve
   trackPendingModules(cacheSignal)
-  await cacheSignal.cacheReady()
+  await waitForPrerenderWarmup(
+    NextNodeServerSpan.serverPrerenderWarmup,
+    cacheSignal,
+    'response'
+  )
 
   initialServerRenderController.abort()
   initialServerPrerenderController.abort()
@@ -3987,6 +4062,10 @@ async function renderToStream(
         }
       }
 
+      if (cacheComponents && process.env.NEXT_RUNTIME !== 'edge') {
+        startClientComponentWarmupSpan()
+      }
+
       // React doesn't start rendering synchronously but we want the RSC render to have a chance to start
       // before we begin SSR rendering because we want to capture any available preload headers so we tick
       // one task before continuing
@@ -4038,14 +4117,17 @@ async function renderToStream(
               tracingMetadata: tracingMetadata,
             })
 
-            const { stream: htmlStream, allReady } =
-              await workUnitAsyncStorage.run(
-                requestStore,
-                resumeToFizzStream,
-                resumeAppElement,
-                postponed,
-                { onError: htmlRendererErrorHandler, nonce }
+            const { stream: htmlStream, allReady: originalAllReady } =
+              await traceHtmlShellWarmup(() =>
+                workUnitAsyncStorage.run(
+                  requestStore,
+                  resumeToFizzStream,
+                  resumeAppElement,
+                  postponed,
+                  { onError: htmlRendererErrorHandler, nonce }
+                )
               )
+            const allReady = traceHtmlAllReady(originalAllReady)
 
             // End the render span only after React completed rendering (including anything inside Suspense boundaries)
             allReady.finally(() => {
@@ -4106,12 +4188,16 @@ async function renderToStream(
           formState,
         }
 
-        const { stream: htmlStream, allReady } = await workUnitAsyncStorage.run(
-          requestStore,
-          renderToNodeFizzStream,
-          appElement,
-          fizzOptions
-        )
+        const { stream: htmlStream, allReady: originalAllReady } =
+          await traceHtmlShellWarmup(() =>
+            workUnitAsyncStorage.run(
+              requestStore,
+              renderToNodeFizzStream,
+              appElement,
+              fizzOptions
+            )
+          )
+        const allReady = traceHtmlAllReady(originalAllReady)
 
         // End the render span only after React completed rendering (including anything inside Suspense boundaries)
         allReady.finally(() => {
@@ -4177,14 +4263,17 @@ async function renderToStream(
               tracingMetadata: tracingMetadata,
             })
 
-            const { stream: htmlStream, allReady } =
-              await workUnitAsyncStorage.run(
-                requestStore,
-                resumeToFizzStream,
-                resumeAppElement,
-                postponed,
-                { onError: htmlRendererErrorHandler, nonce }
+            const { stream: htmlStream, allReady: originalAllReady } =
+              await traceHtmlShellWarmup(() =>
+                workUnitAsyncStorage.run(
+                  requestStore,
+                  resumeToFizzStream,
+                  resumeAppElement,
+                  postponed,
+                  { onError: htmlRendererErrorHandler, nonce }
+                )
               )
+            const allReady = traceHtmlAllReady(originalAllReady)
 
             // End the render span only after React completed rendering (including anything inside Suspense boundaries)
             allReady.finally(() => {
@@ -4244,12 +4333,16 @@ async function renderToStream(
           formState,
         }
 
-        const { stream: htmlStream, allReady } = await workUnitAsyncStorage.run(
-          requestStore,
-          renderToWebFizzStream,
-          appElement,
-          fizzOptions
-        )
+        const { stream: htmlStream, allReady: originalAllReady } =
+          await traceHtmlShellWarmup(() =>
+            workUnitAsyncStorage.run(
+              requestStore,
+              renderToWebFizzStream,
+              appElement,
+              fizzOptions
+            )
+          )
+        const allReady = traceHtmlAllReady(originalAllReady)
 
         // End the render span only after React completed rendering (including anything inside Suspense boundaries)
         allReady.finally(() => {
@@ -4746,7 +4839,11 @@ async function renderWithRestartOnCacheMissInDevWeb(
   // Ideally we'd only wait for caches that are needed in the static stage.
   // This will be optimized in the future by not allowing runtime/dynamic APIs to resolve.
 
-  await cacheSignal.cacheReady()
+  await waitForPrerenderWarmup(
+    NextNodeServerSpan.cacheMissWarmup,
+    cacheSignal,
+    'response'
+  )
   initialReactController.abort()
 
   //===============================================
@@ -5056,7 +5153,11 @@ async function renderWithRestartOnCacheMissInDevNode(
   // Ideally we'd only wait for caches that are needed in the static stage.
   // This will be optimized in the future by not allowing runtime/dynamic APIs to resolve.
 
-  await cacheSignal.cacheReady()
+  await waitForPrerenderWarmup(
+    NextNodeServerSpan.cacheMissWarmup,
+    cacheSignal,
+    'response'
+  )
   initialReactController.abort()
 
   //===============================================
@@ -5842,7 +5943,11 @@ async function warmupClientModulesForStagedValidation(
   // Promises passed to client were already awaited above (assuming that they came from cached functions)
   const cacheSignal = new CacheSignal()
   trackPendingModules(cacheSignal)
-  await cacheSignal.cacheReady()
+  await waitForPrerenderWarmup(
+    NextNodeServerSpan.clientPrerenderWarmup,
+    cacheSignal,
+    'validation'
+  )
   initialClientReactController.abort()
 }
 
@@ -6512,7 +6617,11 @@ async function renderWithRestartOnCacheMissInValidation(
   }
 
   // Cache miss. Wait for caches to fill, then re-render with warm caches.
-  await cacheSignal.cacheReady()
+  await waitForPrerenderWarmup(
+    NextNodeServerSpan.cacheMissWarmup,
+    cacheSignal,
+    'validation'
+  )
   initialReactController.abort()
 
   //===============================================
@@ -7371,7 +7480,11 @@ async function prerenderToStream(
 
       // Wait for all caches to be finished filling and for async imports to resolve
       trackPendingModules(cacheSignal)
-      await cacheSignal.cacheReady()
+      await waitForPrerenderWarmup(
+        NextNodeServerSpan.serverPrerenderWarmup,
+        cacheSignal,
+        'response'
+      )
 
       initialServerReactController.abort()
 
@@ -7517,7 +7630,11 @@ async function prerenderToStream(
         // This is mostly needed for dynamic `import()`s in client components.
         // Promises passed to client were already awaited above (assuming that they came from cached functions)
         trackPendingModules(cacheSignal)
-        await cacheSignal.cacheReady()
+        await waitForPrerenderWarmup(
+          NextNodeServerSpan.clientPrerenderWarmup,
+          cacheSignal,
+          'response'
+        )
         initialClientReactController.abort()
       }
 
