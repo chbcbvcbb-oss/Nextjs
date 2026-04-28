@@ -10,6 +10,13 @@ const { linkPackages } =
 const PREFER_OFFLINE = process.env.NEXT_TEST_PREFER_OFFLINE === '1'
 const useRspack = process.env.NEXT_TEST_USE_RSPACK === '1'
 
+function createTempId() {
+  // Windows path length limits can cause Turbopack to fail resolving packages
+  // from very deep pnpm virtual-store paths. Keep temp folder names short.
+  const bytes = process.platform === 'win32' ? 16 : 32
+  return randomBytes(bytes).toString('hex')
+}
+
 async function installDependencies(cwd, tmpDir) {
   const args = [
     'install',
@@ -27,13 +34,6 @@ async function installDependencies(cwd, tmpDir) {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: {
       ...process.env,
-      // pnpm reads this despite claims it ignores `npm_config_*` env variables.
-      // This isn't set in CI but some local environments set this from the
-      // pnpm-workspace.yaml for unknown reasons.
-      // minimumReleaseAgeExclude is not propagated with environment variables
-      // so some installs would just fail.
-      // TODO: ideally every test fixture would run with minimumReleaseAgeExclude but
-      // that requires some work in monorepo test suites.
       npm_config_minimum_release_age: undefined,
     },
   })
@@ -45,7 +45,7 @@ async function installDependencies(cwd, tmpDir) {
  * @param {import('@next/telemetry').Span} param0.parentSpan
  * @param {object} [param0.dependencies]
  * @param {object | null} [param0.resolutions]
- * @param { ((ctx: { dependencies: { [key: string]: string } }) => string) | string | null} [param0.installCommand]
+ * @param {((ctx: { dependencies: { [key: string]: string } }) => string) | string | null} [param0.installCommand]
  * @param {object} [param0.packageJson]
  * @param {string} [param0.subDir]
  * @param {(span: import('@next/telemetry').Span, installDir: string) => Promise<void>} [param0.beforeInstall]
@@ -68,7 +68,7 @@ async function createNextInstall({
       const origRepoDir = path.join(__dirname, '../../')
       const installDir = path.join(
         tmpDir,
-        `next-install-${randomBytes(32).toString('hex')}`,
+        `next-install-${createTempId()}`,
         subDir
       )
       require('console').log('Creating next instance in:')
@@ -81,12 +81,35 @@ async function createNextInstall({
         pkgPaths = new Map(JSON.parse(pkgPathsEnv))
         require('console').log('using provided pkg paths')
       } else {
-        await rootSpan.traceChild('turbo-run-pack').traceAsyncFn(() =>
-          execa('pnpm', ['turbo', 'run', 'pack-for-isolated-tests'], {
-            cwd: origRepoDir,
-            stdio: ['ignore', 'inherit', 'inherit'],
-          })
-        )
+        const tmpRepoDir = path.join(tmpDir, `next-repo-${createTempId()}`, subDir)
+        require('console').log('Creating temp repo dir', tmpRepoDir)
+
+        for (const item of [
+          'package.json',
+          'packages',
+          // Otherwise pnpm will not recognize workspaces
+          'pnpm-workspace.yaml',
+        ]) {
+          await rootSpan
+            .traceChild(`copy ${item} to temp dir`)
+            .traceAsyncFn(() =>
+              fs.copy(
+                path.join(origRepoDir, item),
+                path.join(tmpRepoDir, item),
+                {
+                  filter: (item) => {
+                    return (
+                      !item.includes('node_modules') &&
+                      !item.includes('pnpm-lock.yaml') &&
+                      !item.includes('.DS_Store') &&
+                      // Exclude Rust compilation files
+                      !/packages[\\/]next-swc/.test(item)
+                    )
+                  },
+                }
+              )
+            )
+        }
 
         if (process.env.NEXT_TEST_WASM) {
           const wasmPath = path.join(origRepoDir, 'crates', 'wasm', 'pkg')
@@ -141,8 +164,6 @@ async function createNextInstall({
         combinedDependencies['next-rspack'] = pkgPaths.get('next-rspack')
       }
 
-      // Build overrides to resolve transitive workspace deps from local
-      // tarballs. Write all three formats so npm, pnpm, and yarn all work.
       const workspacePkgOverrides = {}
       for (const [name, tarballPath] of pkgPaths.entries()) {
         if (!combinedDependencies[name]) {
@@ -187,11 +208,9 @@ async function createNextInstall({
       )
 
       if (beforeInstall !== undefined) {
-        await rootSpan
-          .traceChild('beforeInstall')
-          .traceAsyncFn(async (span) => {
-            await beforeInstall(span, installDir)
-          })
+        await rootSpan.traceChild('beforeInstall').traceAsyncFn(async (span) => {
+          await beforeInstall(span, installDir)
+        })
       }
 
       if (installCommand) {
