@@ -1,4 +1,4 @@
-;!function(){try { var e="undefined"!=typeof globalThis?globalThis:"undefined"!=typeof global?global:"undefined"!=typeof window?window:"undefined"!=typeof self?self:{},n=(new e.Error).stack;n&&((e._debugIds|| (e._debugIds={}))[n]="63d3116b-6e4c-29e3-253a-989477151583")}catch(e){}}();
+;!function(){try { var e="undefined"!=typeof globalThis?globalThis:"undefined"!=typeof global?global:"undefined"!=typeof window?window:"undefined"!=typeof self?self:{},n=(new e.Error).stack;n&&((e._debugIds|| (e._debugIds={}))[n]="03118c78-a435-f782-c52a-1ed0ba8cb022")}catch(e){}}();
 (globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push([
     "output/1i9t_crates_turbopack-tests_tests_snapshot_debug-ids_browser_input_index_19boa0e.js",
     {"otherChunks":["output/1do3_crates_turbopack-tests_tests_snapshot_debug-ids_browser_input_index_03ibyvs.js"],"runtimeModuleIds":["[project]/turbopack/crates/turbopack-tests/tests/snapshot/debug-ids/browser/input/index.js [test] (ecmascript)"]}
@@ -939,12 +939,7 @@ function formatDependencyChain(dependencyChain) {
         // else above can accept this update.
         if (moduleId === undefined) {
             if (autoAcceptRootModules) {
-                return {
-                    type: 'accepted',
-                    moduleId,
-                    outdatedModules,
-                    outdatedDependencies
-                };
+                continue;
             }
             return {
                 type: 'unaccepted',
@@ -955,7 +950,7 @@ function formatDependencyChain(dependencyChain) {
         const hotState = moduleHotState.get(module);
         if (// The module is not in the cache. Since this is a "modified" update,
         // it means that the module was never instantiated before.
-        !module || hotState.selfAccepted && !hotState.selfInvalidated) {
+        !module || !autoAcceptRootModules && hotState.selfAccepted && !hotState.selfInvalidated) {
             continue;
         }
         if (hotState.selfDeclined) {
@@ -966,9 +961,6 @@ function formatDependencyChain(dependencyChain) {
             };
         }
         if (runtimeModules.has(moduleId)) {
-            if (autoAcceptRootModules) {
-                continue;
-            }
             queue.push({
                 moduleId: undefined,
                 dependencyChain: [
@@ -1259,10 +1251,11 @@ function formatDependencyChain(dependencyChain) {
         outdatedModuleParents.set(moduleId, oldModule?.parents);
         delete devModuleCache[moduleId];
     }
-    // Remove outdated dependencies from parent module's children list.
-    // When a parent accepts a child's update, the child is re-instantiated
-    // but the parent stays alive. We remove the old child reference so it
-    // gets re-added when the child re-imports.
+    // Dispose and evict accepted dependencies from cache.
+    // When a parent accepts a child's update, the child must be disposed and
+    // removed from the module cache so the next require() call re-instantiates
+    // it from the new factory. The parent stays alive and its accept callback
+    // handles the transition.
     for (const [parentId, deps] of outdatedDependencies){
         const module = devModuleCache[parentId];
         if (module) {
@@ -2253,5 +2246,5 @@ chunkListsToRegister.forEach(registerChunkList);
 })();
 
 
-//# debugId=63d3116b-6e4c-29e3-253a-989477151583
+//# debugId=03118c78-a435-f782-c52a-1ed0ba8cb022
 //# sourceMappingURL=1do3_crates_turbopack-tests_tests_snapshot_debug-ids_browser_input_index_19boa0e.js.map

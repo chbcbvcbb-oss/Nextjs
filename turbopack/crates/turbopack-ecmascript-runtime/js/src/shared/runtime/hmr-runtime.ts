@@ -146,12 +146,7 @@ function getAffectedModuleEffects(
     // else above can accept this update.
     if (moduleId === undefined) {
       if (autoAcceptRootModules) {
-        return {
-          type: 'accepted',
-          moduleId,
-          outdatedModules,
-          outdatedDependencies,
-        }
+        continue
       }
       return {
         type: 'unaccepted',
@@ -167,7 +162,9 @@ function getAffectedModuleEffects(
       // it means that the module was never instantiated before.
       !module || // The module accepted itself without invalidating globalThis.
       // TODO is that right?
-      (hotState.selfAccepted && !hotState.selfInvalidated)
+      (!autoAcceptRootModules &&
+        hotState.selfAccepted &&
+        !hotState.selfInvalidated)
     ) {
       continue
     }
@@ -181,9 +178,6 @@ function getAffectedModuleEffects(
     }
 
     if (runtimeModules.has(moduleId)) {
-      if (autoAcceptRootModules) {
-        continue
-      }
       queue.push({
         moduleId: undefined,
         dependencyChain: [...dependencyChain, moduleId],
@@ -229,11 +223,6 @@ function getAffectedModuleEffects(
         moduleId: parentId,
         dependencyChain: [...dependencyChain, moduleId],
       })
-    }
-
-    // If no parents and we're at a root module, auto-accept if configured
-    if (module.parents.length === 0 && autoAcceptRootModules) {
-      continue
     }
   }
 
@@ -560,10 +549,11 @@ function disposePhase(
     delete devModuleCache[moduleId]
   }
 
-  // Remove outdated dependencies from parent module's children list.
-  // When a parent accepts a child's update, the child is re-instantiated
-  // but the parent stays alive. We remove the old child reference so it
-  // gets re-added when the child re-imports.
+  // Dispose and evict accepted dependencies from cache.
+  // When a parent accepts a child's update, the child must be disposed and
+  // removed from the module cache so the next require() call re-instantiates
+  // it from the new factory. The parent stays alive and its accept callback
+  // handles the transition.
   for (const [parentId, deps] of outdatedDependencies) {
     const module = devModuleCache[parentId]
     if (module) {
