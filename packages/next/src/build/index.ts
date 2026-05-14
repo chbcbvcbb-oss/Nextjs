@@ -189,10 +189,8 @@ import { traceMemoryUsage } from '../lib/memory/trace'
 import { generateEncryptionKeyBase64 } from '../server/app-render/encryption-utils-server'
 import type { DeepReadonly } from '../shared/lib/deep-readonly'
 import uploadTrace from '../trace/upload-trace'
-import {
-  checkIsAppPPREnabled,
-  checkIsRoutePPREnabled,
-} from '../server/lib/experimental/ppr'
+import { checkIsAppPPREnabled } from '../server/lib/experimental/ppr'
+import { isOutputExportDynamicFallbackEnabled } from '../lib/output-export-dynamic-fallback'
 import { FallbackMode, fallbackModeToFallbackField } from '../lib/fallback'
 import { RenderingMode } from './rendering-mode'
 import { InvariantError } from '../shared/lib/invariant-error'
@@ -2108,6 +2106,8 @@ export default async function build(
               locales: config.i18n?.locales,
               defaultLocale: config.i18n?.defaultLocale,
               nextConfigOutput: config.output,
+              outputExportDynamicFallbacks:
+                config.experimental.outputExportDynamicFallbacks === true,
               pprConfig: config.experimental.ppr,
               partialFallbacksEnabled:
                 config.experimental.partialFallbacks === true,
@@ -2343,6 +2343,9 @@ export default async function build(
                               : config.experimental.isrFlushToDisk,
                             cacheMaxMemorySize: config.cacheMaxMemorySize,
                             nextConfigOutput: config.output,
+                            outputExportDynamicFallbacks:
+                              config.experimental
+                                .outputExportDynamicFallbacks === true,
                             pprConfig: config.experimental.ppr,
                             partialFallbacksEnabled:
                               config.experimental.partialFallbacks === true,
@@ -2407,7 +2410,8 @@ export default async function build(
                             if (
                               config.output === 'export' &&
                               isDynamic &&
-                              !hasGenerateStaticParams
+                              !hasGenerateStaticParams &&
+                              !isOutputExportDynamicFallbackEnabled(config)
                             ) {
                               throw new Error(
                                 `Page "${page}" is missing "generateStaticParams()" so it cannot be used with "output: export" config.`
@@ -2942,9 +2946,12 @@ export default async function build(
               sortedStaticPaths.forEach(([originalAppPath, routes]) => {
                 const appConfig = appDefaultConfigs.get(originalAppPath)
                 const isDynamicError = appConfig?.dynamic === 'error'
+                const normalizedAppPath =
+                  appNormalizedPaths.get(originalAppPath)
 
-                const isRoutePPREnabled: boolean = appConfig
-                  ? checkIsRoutePPREnabled(config.experimental.ppr)
+                const isRoutePPREnabled: boolean = normalizedAppPath
+                  ? (pageInfos.get(normalizedAppPath)?.isRoutePPREnabled ??
+                    false)
                   : false
 
                 routes.forEach((route) => {
@@ -3140,8 +3147,7 @@ export default async function build(
             // When this is an app page and PPR is enabled, the route supports
             // partial pre-rendering.
             const isRoutePPREnabled: true | undefined =
-              !isAppRouteHandler &&
-              checkIsRoutePPREnabled(config.experimental.ppr)
+              !isAppRouteHandler && pageInfos.get(page)?.isRoutePPREnabled
                 ? true
                 : undefined
 
