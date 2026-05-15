@@ -82,12 +82,14 @@ describe('adapter-config export', () => {
 
     expect(routing).toEqual({
       beforeMiddleware: expect.toBeArray(),
+      middlewareMatchers: expect.toBeArray(),
       beforeFiles: expect.toBeArray(),
       afterFiles: expect.toBeArray(),
       dynamicRoutes: expect.toBeArray(),
       onMatch: expect.toBeArray(),
       fallback: expect.toBeArray(),
       shouldNormalizeNextData: expect.toBeBoolean(),
+      rsc: expect.toBeObject(),
     })
   })
 })

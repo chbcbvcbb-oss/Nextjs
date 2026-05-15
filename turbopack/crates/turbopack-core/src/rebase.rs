@@ -1,7 +1,7 @@
 use std::hash::Hash;
 
 use anyhow::Result;
-use turbo_tasks::{ResolvedVc, TryJoinIterExt, Vc};
+use turbo_tasks::{ResolvedVc, TryJoinIterExt, Vc, turbobail};
 use turbo_tasks_fs::FileSystemPath;
 
 use crate::{
@@ -64,7 +64,7 @@ impl OutputAsset for RebasedAsset {
     #[turbo_tasks::function]
     async fn path(&self) -> Result<Vc<FileSystemPath>> {
         Ok(FileSystemPath::rebase(
-            self.module.ident().path().owned().await?,
+            self.module.ident().await?.path.clone(),
             self.input_dir.clone(),
             self.output_dir.clone(),
         ))
@@ -74,7 +74,11 @@ impl OutputAsset for RebasedAsset {
 #[turbo_tasks::value_impl]
 impl Asset for RebasedAsset {
     #[turbo_tasks::function]
-    fn content(&self) -> Vc<AssetContent> {
-        self.module.content()
+    async fn content(&self) -> Result<Vc<AssetContent>> {
+        if let Some(source) = *self.module.source().await? {
+            Ok(source.content())
+        } else {
+            turbobail!("Module {} has no source", self.module.ident());
+        }
     }
 }

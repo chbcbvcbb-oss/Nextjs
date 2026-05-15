@@ -19,7 +19,7 @@ import FileSystemCache from './file-system-cache'
 import { normalizePagePath } from '../../../shared/lib/page-path/normalize-page-path'
 
 import {
-  CACHE_ONE_YEAR,
+  CACHE_ONE_YEAR_SECONDS,
   NEXT_CACHE_TAGS_HEADER,
   PRERENDER_REVALIDATE_HEADER,
 } from '../../../lib/constants'
@@ -441,11 +441,31 @@ export class IncrementalCache implements IncrementalCacheType {
       if (resumeDataCache) {
         const memoryCacheData = resumeDataCache.fetch.get(cacheKey)
         if (memoryCacheData?.kind === CachedRouteKind.FETCH) {
-          if (IncrementalCache.debug) {
-            console.log('IncrementalCache: rdc:hit', cacheKey)
-          }
+          // Check if any tags were recently revalidated before returning RDC entry.
+          // When a server action calls updateTag(), the re-render should see fresh
+          // data instead of stale RDC data.
+          const workStore = workAsyncStorage.getStore()
+          const combinedTags = [...(ctx.tags || []), ...(ctx.softTags || [])]
+          const hasRevalidatedTag = combinedTags.some(
+            (tag) =>
+              this.revalidatedTags?.includes(tag) ||
+              workStore?.pendingRevalidatedTags?.some(
+                (item) => item.tag === tag
+              )
+          )
 
-          return { isStale: false, value: memoryCacheData }
+          if (hasRevalidatedTag) {
+            if (IncrementalCache.debug) {
+              console.log('IncrementalCache: rdc:revalidated-tag', cacheKey)
+            }
+            // Fall through to cacheHandler lookup
+          } else {
+            if (IncrementalCache.debug) {
+              console.log('IncrementalCache: rdc:hit', cacheKey)
+            }
+
+            return { isStale: false, value: memoryCacheData }
+          }
         } else if (IncrementalCache.debug) {
           console.log('IncrementalCache: rdc:miss', cacheKey)
         }
@@ -550,6 +570,7 @@ export class IncrementalCache implements IncrementalCacheType {
     }
 
     let entry: IncrementalResponseCacheEntry | null = null
+    const { isFallback } = ctx
     const cacheControl = this.cacheControls.get(toRoute(cacheKey))
 
     let isStale: boolean | -1 | undefined
@@ -557,7 +578,7 @@ export class IncrementalCache implements IncrementalCacheType {
 
     if (cacheData?.lastModified === -1) {
       isStale = -1
-      revalidateAfter = -1 * CACHE_ONE_YEAR
+      revalidateAfter = -1 * CACHE_ONE_YEAR_SECONDS * 1000
     } else {
       const now = performance.timeOrigin + performance.now()
       const lastModified = cacheData?.lastModified || now
@@ -569,26 +590,39 @@ export class IncrementalCache implements IncrementalCacheType {
         ctx.isFallback
       )
 
-      isStale =
-        revalidateAfter !== false && revalidateAfter < now ? true : undefined
+      // If the route's `expire` time has passed, force a blocking revalidation
+      // by signalling `isStale = -1`. The response cache treats `-1` as "skip
+      // the early SWR resolve" and awaits a fresh render before the user sees a
+      // response.
+      const expireAfter =
+        typeof cacheControl?.expire === 'number'
+          ? cacheControl.expire * 1000 + lastModified
+          : undefined
 
-      // If the stale time couldn't be determined based on the revalidation
-      // time, we check if the tags are expired or stale.
-      if (
-        isStale === undefined &&
-        (cacheData?.value?.kind === CachedRouteKind.APP_PAGE ||
-          cacheData?.value?.kind === CachedRouteKind.APP_ROUTE)
-      ) {
-        const tagsHeader = cacheData.value.headers?.[NEXT_CACHE_TAGS_HEADER]
+      if (expireAfter !== undefined && expireAfter < now) {
+        isStale = -1
+      } else {
+        isStale =
+          revalidateAfter !== false && revalidateAfter < now ? true : undefined
 
-        if (typeof tagsHeader === 'string') {
-          const cacheTags = tagsHeader.split(',')
+        // If the stale time couldn't be determined based on the revalidation
+        // time, we check if the tags are expired or stale.
+        if (
+          isStale === undefined &&
+          (cacheData?.value?.kind === CachedRouteKind.APP_PAGE ||
+            cacheData?.value?.kind === CachedRouteKind.APP_ROUTE)
+        ) {
+          const tagsHeader = cacheData.value.headers?.[NEXT_CACHE_TAGS_HEADER]
 
-          if (cacheTags.length > 0) {
-            if (areTagsExpired(cacheTags, lastModified)) {
-              isStale = -1
-            } else if (areTagsStale(cacheTags, lastModified)) {
-              isStale = true
+          if (typeof tagsHeader === 'string') {
+            const cacheTags = tagsHeader.split(',')
+
+            if (cacheTags.length > 0) {
+              if (areTagsExpired(cacheTags, lastModified)) {
+                isStale = -1
+              } else if (areTagsStale(cacheTags, lastModified)) {
+                isStale = true
+              }
             }
           }
         }
@@ -601,6 +635,7 @@ export class IncrementalCache implements IncrementalCacheType {
         cacheControl,
         revalidateAfter,
         value: cacheData.value,
+        isFallback,
       }
     }
 
@@ -618,6 +653,7 @@ export class IncrementalCache implements IncrementalCacheType {
         value: null,
         cacheControl,
         revalidateAfter,
+        isFallback,
       }
       this.set(cacheKey, entry.value, { ...ctx, cacheControl })
     }

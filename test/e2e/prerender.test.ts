@@ -3,8 +3,7 @@ import cookie from 'cookie'
 import cheerio from 'cheerio'
 import { join, sep } from 'path'
 import escapeRegex from 'escape-string-regexp'
-import { createNext, FileRef } from 'e2e-utils'
-import { NextInstance } from 'e2e-utils'
+import { FileRef, isReact18, nextTestSetup } from 'e2e-utils'
 import {
   waitForRedbox,
   check,
@@ -15,46 +14,40 @@ import {
   renderViaHTTP,
   retry,
   waitFor,
+  getCacheHeader,
 } from 'next-test-utils'
 import webdriver from 'next-webdriver'
 import stripAnsi from 'strip-ansi'
 
-const isReact18 = parseInt(process.env.NEXT_TEST_REACT_VERSION) === 18
-
 describe('Prerender', () => {
-  let next: NextInstance
-
-  beforeAll(async () => {
-    next = await createNext({
-      files: {
-        pages: new FileRef(join(__dirname, 'prerender/pages')),
-        'world.txt': new FileRef(join(__dirname, 'prerender/world.txt')),
+  const { next } = nextTestSetup({
+    files: {
+      pages: new FileRef(join(__dirname, 'prerender/pages')),
+      'world.txt': new FileRef(join(__dirname, 'prerender/world.txt')),
+    },
+    dependencies: {
+      firebase: '7.14.5',
+    },
+    nextConfig: {
+      async rewrites() {
+        return [
+          {
+            source: '/some-rewrite/:item',
+            destination: '/blog/post-:item',
+          },
+          {
+            source: '/about',
+            destination: '/lang/en/about',
+          },
+          {
+            source: '/blocked-create',
+            destination: '/blocking-fallback/blocked-create',
+          },
+        ]
       },
-      dependencies: {
-        firebase: '7.14.5',
-      },
-      nextConfig: {
-        async rewrites() {
-          return [
-            {
-              source: '/some-rewrite/:item',
-              destination: '/blog/post-:item',
-            },
-            {
-              source: '/about',
-              destination: '/lang/en/about',
-            },
-            {
-              source: '/blocked-create',
-              destination: '/blocking-fallback/blocked-create',
-            },
-          ]
-        },
-      },
-      patchFileDelay: 500,
-    })
+    },
+    patchFileDelay: 500,
   })
-  afterAll(() => next.destroy())
 
   async function waitForCacheWrite(
     prerenderPath = '',
@@ -90,7 +83,7 @@ describe('Prerender', () => {
   }
 
   function isCachingHeader(cacheControl) {
-    return !cacheControl || !/no-store/.test(cacheControl)
+    return !cacheControl || !/no-store|no-cache/.test(cacheControl)
   }
 
   const allowHeader = [
@@ -381,7 +374,6 @@ describe('Prerender', () => {
       ]
 
       for (const toBuild of toBuildBatches) {
-        // eslint-disable-next-line no-loop-func -- we're not accessing `next` after the loop was exited.
         await Promise.all(toBuild.map((pg) => renderViaHTTP(next.url, pg)))
       }
 
@@ -676,25 +668,21 @@ describe('Prerender', () => {
     if (!isDev) {
       it('should use correct caching headers for a revalidate page', async () => {
         const initialRes = await fetchViaHTTP(next.url, '/')
-        expect(initialRes.headers.get('cache-control')).toBe('s-maxage=2')
-        if (!isDeploy) {
-          expect(initialRes.headers.get('cdn-cache-control')).toBe(
-            'max-age=2, stale-while-revalidate=31535998'
-          )
-        }
+        expect(initialRes.headers.get('cache-control')).toBe(
+          isDeploy
+            ? 'public, max-age=0, must-revalidate'
+            : 's-maxage=2, stale-while-revalidate=31535998'
+        )
       })
 
       it('should use correct caching headers for a fallback-true page (prerendered)', async () => {
         const initialRes = await fetchViaHTTP(next.url, '/fallback-true/first')
         expect(initialRes.status).toBe(200)
         expect(initialRes.headers.get('cache-control')).toBe(
-          isDeploy ? 'public, max-age=0, must-revalidate' : 's-maxage=2'
+          isDeploy
+            ? 'public, max-age=0, must-revalidate'
+            : 's-maxage=2, stale-while-revalidate=31535998'
         )
-        if (!isDeploy) {
-          expect(initialRes.headers.get('cdn-cache-control')).toBe(
-            'max-age=2, stale-while-revalidate=31535998'
-          )
-        }
         expect(await initialRes.text()).not.toContain('hi fallback')
 
         const dataRes = await fetchViaHTTP(
@@ -703,23 +691,19 @@ describe('Prerender', () => {
         )
         expect(dataRes.status).toBe(200)
         expect(dataRes.headers.get('cache-control')).toBe(
-          isDeploy ? 'public, max-age=0, must-revalidate' : 's-maxage=2'
+          isDeploy
+            ? 'public, max-age=0, must-revalidate'
+            : 's-maxage=2, stale-while-revalidate=31535998'
         )
-        if (!isDeploy) {
-          expect(dataRes.headers.get('cdn-cache-control')).toBe(
-            'max-age=2, stale-while-revalidate=31535998'
-          )
-        }
 
         await retry(async () => {
           const finalRes = await fetchViaHTTP(next.url, `/fallback-true/first`)
           expect(finalRes.status).toBe(200)
-          expect(finalRes.headers.get('cache-control')).toBe('s-maxage=2')
-          if (!isDeploy) {
-            expect(finalRes.headers.get('cdn-cache-control')).toBe(
-              'max-age=2, stale-while-revalidate=31535998'
-            )
-          }
+          expect(finalRes.headers.get('cache-control')).toBe(
+            isDeploy
+              ? 'public, max-age=0, must-revalidate'
+              : 's-maxage=2, stale-while-revalidate=31535998'
+          )
           expect(await finalRes.text()).not.toContain('hi fallback')
         })
       })
@@ -739,22 +723,20 @@ describe('Prerender', () => {
           `/_next/data/${next.buildId}/fallback-true/second.json`
         )
         expect(dataRes.status).toBe(200)
-        expect(dataRes.headers.get('cache-control')).toBe('s-maxage=2')
-        if (!isDeploy) {
-          expect(dataRes.headers.get('cdn-cache-control')).toBe(
-            'max-age=2, stale-while-revalidate=31535998'
-          )
-        }
+        expect(dataRes.headers.get('cache-control')).toBe(
+          isDeploy
+            ? 'public, max-age=0, must-revalidate'
+            : 's-maxage=2, stale-while-revalidate=31535998'
+        )
 
         await retry(async () => {
           const finalRes = await fetchViaHTTP(next.url, `/fallback-true/second`)
           expect(finalRes.status).toBe(200)
-          expect(finalRes.headers.get('cache-control')).toBe('s-maxage=2')
-          if (!isDeploy) {
-            expect(finalRes.headers.get('cdn-cache-control')).toBe(
-              'max-age=2, stale-while-revalidate=31535998'
-            )
-          }
+          expect(finalRes.headers.get('cache-control')).toBe(
+            isDeploy
+              ? 'public, max-age=0, must-revalidate'
+              : 's-maxage=2, stale-while-revalidate=31535998'
+          )
           expect(await finalRes.text()).not.toContain('hi fallback')
         })
       })
@@ -1390,11 +1372,6 @@ describe('Prerender', () => {
         expect(initialRes.headers.get('cache-control')).toBe(
           isDeploy ? 'public, max-age=0, must-revalidate' : 's-maxage=31536000'
         )
-        if (!isDeploy) {
-          expect(initialRes.headers.get('cdn-cache-control')).toBe(
-            'max-age=31536000'
-          )
-        }
         const initialHtml = await initialRes.text()
         expect(initialHtml).toMatch(/hello.*?world/)
       })
@@ -2077,7 +2054,10 @@ describe('Prerender', () => {
 
       it('should handle revalidating JSON correctly', async () => {
         const route = `/_next/data/${next.buildId}/blog/post-2/comment-3.json`
-        const initialJson = await renderViaHTTP(next.url, route)
+        const initialRes = await fetchViaHTTP(next.url, route)
+        const initialJson = await initialRes.text()
+        expect(initialRes.headers.get('Content-Length')).toBeDefined()
+        expect(initialRes.headers.get('ETag')).toBeDefined()
         expect(initialJson).toMatch(/post-2/)
         expect(initialJson).toMatch(/comment-3/)
 
@@ -2092,7 +2072,10 @@ describe('Prerender', () => {
         await renderViaHTTP(next.url, route)
 
         await check(async () => {
-          newJson = await renderViaHTTP(next.url, route)
+          const newRes = await fetchViaHTTP(next.url, route)
+          expect(newRes.headers.get('Content-Length')).toBeDefined()
+          expect(newRes.headers.get('ETag')).toBeDefined()
+          newJson = await newRes.text()
           return newJson !== initialJson ? 'success' : newJson
         }, 'success')
 
@@ -2149,7 +2132,10 @@ describe('Prerender', () => {
 
       it('should handle revalidating HTML correctly with blocking and seed', async () => {
         const route = '/blocking-fallback/a'
-        const initialHtml = await renderViaHTTP(next.url, route)
+        const initialRes = await fetchViaHTTP(next.url, route)
+        const initialHtml = await initialRes.text()
+        expect(initialRes.headers.get('Content-Length')).toBeDefined()
+        expect(initialRes.headers.get('ETag')).toBeDefined()
         const $initial = cheerio.load(initialHtml)
         expect($initial('p').text()).toBe('Post: a')
 
@@ -2164,7 +2150,10 @@ describe('Prerender', () => {
         await renderViaHTTP(next.url, route)
 
         await check(async () => {
-          newHtml = await renderViaHTTP(next.url, route)
+          const newRes = await fetchViaHTTP(next.url, route)
+          expect(newRes.headers.get('Content-Length')).toBeDefined()
+          expect(newRes.headers.get('ETag')).toBeDefined()
+          newHtml = await newRes.text()
           return newHtml !== initialHtml ? 'success' : newHtml
         }, 'success')
 
@@ -2220,7 +2209,7 @@ describe('Prerender', () => {
     if ((global as any).isNextStart) {
       it('should of formatted build output correctly', () => {
         expect(next.cliOutput).toMatch(/○ \/normal/)
-        expect(next.cliOutput).toMatch(/● \/blog\/\[post\]/)
+        expect(next.cliOutput).toMatch(/[├└] {3}\/blog\/\[post\]/)
         expect(next.cliOutput).toMatch(/\+2 more paths/)
       })
 
@@ -2314,9 +2303,8 @@ describe('Prerender', () => {
         const html = await res.text()
         const $ = cheerio.load(html)
         const initialTime = $('#time').text()
-        const cacheHeader = isDeploy ? 'x-vercel-cache' : 'x-nextjs-cache'
 
-        expect(res.headers.get(cacheHeader)).toMatch(/MISS/)
+        expect(getCacheHeader(res)).toMatch(/MISS/)
         expect($('p').text()).toMatch(/Post:.*?test-manual-1/)
 
         // we use retry here as the cache might still be
@@ -2329,7 +2317,7 @@ describe('Prerender', () => {
           const html2 = await res2.text()
           const $2 = cheerio.load(html2)
 
-          expect(res2.headers.get(cacheHeader)).toMatch(/(HIT|STALE)/)
+          expect(getCacheHeader(res2)).toMatch(/(HIT|STALE)/)
           expect(initialTime).toBe($2('#time').text())
         })
 
@@ -2355,7 +2343,7 @@ describe('Prerender', () => {
           const $4 = cheerio.load(html4)
 
           expect($4('#time').text()).not.toBe(initialTime)
-          expect(res4.headers.get(cacheHeader)).toMatch(/(HIT|STALE)/)
+          expect(getCacheHeader(res4)).toMatch(/(HIT|STALE)/)
         })
       })
     }
