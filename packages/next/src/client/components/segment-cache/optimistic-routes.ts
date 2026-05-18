@@ -55,7 +55,11 @@ import {
 } from './cache'
 import { isValueExpired } from './cache-map'
 import { doesStaticSegmentAppearInURL } from '../../route-params'
-import type { NormalizedPathname, NormalizedSearch } from './cache-key'
+import type {
+  NormalizedPathname,
+  NormalizedSearch,
+  ParallelSlotKey,
+} from './cache-key'
 import {
   appendLayoutVaryPath,
   finalizeLayoutVaryPath,
@@ -198,6 +202,7 @@ export function discoverKnownRoute(
   now: number,
   pathname: string,
   nextUrl: string | null,
+  parallelSlot: ParallelSlotKey | null,
   pendingEntry: PendingRouteCacheEntry | null,
   routeTree: RouteTree,
   metadataVaryPath: PageVaryPath,
@@ -236,6 +241,7 @@ export function discoverKnownRoute(
       now,
       pathname,
       nextUrl,
+      parallelSlot,
       tree,
       metadataVaryPath,
       couldBeIntercepted,
@@ -257,6 +263,7 @@ export function discoverKnownRoute(
     now,
     pathname,
     nextUrl,
+    parallelSlot,
     tree,
     metadataVaryPath,
     couldBeIntercepted,
@@ -345,6 +352,7 @@ function discoverKnownRoutePart(
   now: number,
   pathname: string,
   nextUrl: string | null,
+  parallelSlot: ParallelSlotKey | null,
   fullTree: RouteTree,
   metadataVaryPath: PageVaryPath,
   couldBeIntercepted: boolean,
@@ -430,6 +438,7 @@ function discoverKnownRoutePart(
         now,
         pathname,
         nextUrl,
+        parallelSlot,
         fullTree,
         metadataVaryPath,
         couldBeIntercepted,
@@ -497,6 +506,7 @@ function discoverKnownRoutePart(
         now,
         pathname,
         nextUrl,
+        parallelSlot,
         fullTree,
         metadataVaryPath,
         couldBeIntercepted,
@@ -535,6 +545,7 @@ function discoverKnownRoutePart(
       now,
       pathname,
       nextUrl,
+      parallelSlot,
       fullTree,
       metadataVaryPath,
       couldBeIntercepted,
@@ -566,6 +577,7 @@ function discoverKnownRoutePart(
       now,
       pathname as NormalizedPathname,
       nextUrl,
+      parallelSlot,
       fullTree,
       metadataVaryPath,
       couldBeIntercepted,

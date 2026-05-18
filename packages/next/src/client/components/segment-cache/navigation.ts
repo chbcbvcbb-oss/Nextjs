@@ -29,7 +29,11 @@ import {
   type FulfilledRouteCacheEntry,
 } from './cache'
 import { discoverKnownRoute } from './optimistic-routes'
-import { createCacheKey, type NormalizedSearch } from './cache-key'
+import {
+  createCacheKey,
+  type NormalizedSearch,
+  type ParallelSlotKey,
+} from './cache-key'
 import { schedulePrefetchTask } from './scheduler'
 import { PrefetchPriority, FetchStrategy } from './types'
 import { getLinkForCurrentNavigation } from '../links'
@@ -39,6 +43,16 @@ import { ScrollBehavior } from '../router-reducer/router-reducer-types'
 import { computeChangedPath } from '../router-reducer/compute-changed-path'
 import { isJavaScriptURLString } from '../../lib/javascript-url'
 import { UnknownDynamicStaleTime, computeDynamicStaleAt } from './bfcache'
+
+function getParallelSlotKey(
+  flightRouterState: FlightRouterState
+): ParallelSlotKey | null {
+  const parallelRoutes = flightRouterState[1]
+  if (!parallelRoutes || Object.keys(parallelRoutes).length === 0) {
+    return null
+  }
+  return Object.keys(parallelRoutes).sort().join('|') as ParallelSlotKey
+}
 
 /**
  * Navigate to a new URL, using the Segment Cache to construct a response.
@@ -114,7 +128,8 @@ function navigateImpl(
   const now = Date.now()
   const href = url.href
 
-  const cacheKey = createCacheKey(href, nextUrl)
+  const parallelSlotKey = getParallelSlotKey(currentFlightRouterState)
+  const cacheKey = createCacheKey(href, nextUrl, parallelSlotKey)
   const route = readRouteCacheEntry(now, cacheKey)
   if (route !== null && route.status === EntryStatus.Fulfilled) {
     // We have a matching prefetch.
@@ -438,6 +453,7 @@ async function navigateToUnknownRoute(
       now,
       url.pathname,
       nextUrl,
+      getParallelSlotKey(currentFlightRouterState),
       null, // No pending entry
       navigationSeed.routeTree,
       metadataVaryPath,
@@ -960,7 +976,8 @@ async function ensurePrefetchThenNavigate(
     require('./navigation-testing-lock') as typeof import('./navigation-testing-lock')
   transitionToCapturedSPA(currentFlightRouterState, null)
 
-  const cacheKey = createCacheKey(url.href, nextUrl)
+  const parallelSlotKey = getParallelSlotKey(currentFlightRouterState)
+  const cacheKey = createCacheKey(url.href, nextUrl, parallelSlotKey)
 
   await new Promise<void>((resolve) => {
     schedulePrefetchTask(

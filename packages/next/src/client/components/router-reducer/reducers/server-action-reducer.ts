@@ -487,6 +487,7 @@ export function serverActionReducer(
             redirectUrl.pathname,
             nextUrl,
             null, // No pending entry
+            null,
             redirectSeed.routeTree,
             metadataVaryPath,
             couldBeIntercepted,
