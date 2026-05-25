@@ -8038,7 +8038,7 @@ async function prerenderToStream(
               nonce={nonce}
               images={ctx.renderOpts.images}
             />,
-            JSON.parse(JSON.stringify(postponed)),
+            structuredClone(postponed),
             {
               signal: createRenderInBrowserAbortSignal(),
               onError: htmlRendererErrorHandler,
@@ -8328,7 +8328,7 @@ async function prerenderToStream(
               nonce={nonce}
               images={ctx.renderOpts.images}
             />,
-            JSON.parse(JSON.stringify(postponed)),
+            structuredClone(postponed),
             {
               signal: createRenderInBrowserAbortSignal(),
               onError: htmlRendererErrorHandler,
