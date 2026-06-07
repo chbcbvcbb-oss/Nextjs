@@ -3088,6 +3088,16 @@ export async function next_bundle_devtools(task, opts) {
   })
 }
 
+export async function next_bundle_instant_devtools(task, opts) {
+  await task.source('dist').webpack({
+    watch: opts.dev,
+    config: require('./next-instant-devtools.webpack-config')({
+      dev: opts.dev,
+    }),
+    name: 'next-bundle-instant-devtools',
+  })
+}
+
 export async function next_bundle(task, opts) {
   await task.parallel(
     [
@@ -3115,6 +3125,7 @@ export async function next_bundle(task, opts) {
       'next_bundle_app_worker_dev_turbo_experimental',
       // devtools
       'next_bundle_devtools',
+      'next_bundle_instant_devtools',
     ],
     opts
   )
