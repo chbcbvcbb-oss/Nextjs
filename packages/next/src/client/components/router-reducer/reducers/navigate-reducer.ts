@@ -41,6 +41,7 @@ export function navigateReducer(
   // state machine.
   const currentUrl = new URL(state.canonicalUrl, location.origin)
   const currentRenderedSearch = state.renderedSearch
+
   return navigateUsingSegmentCache(
     state,
     url,
