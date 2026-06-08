@@ -268,6 +268,9 @@ export function navigateToKnownRoute(
     accumulation
   )
   if (task !== null) {
+    // Attach the scroll behavior to the task so server-patch retries
+    // triggered by tree mismatches can inherit it (e.g. scroll={false}).
+    task.scrollBehavior = scrollBehavior
     if (freshnessPolicy !== FreshnessPolicy.Gesture) {
       spawnDynamicRequests(
         task,

@@ -17,6 +17,7 @@ import { fetchServerResponse } from './fetch-server-response'
 import { dispatchAppRouterAction } from '../use-action-queue'
 import {
   ACTION_SERVER_PATCH,
+  ScrollBehavior,
   type ServerPatchAction,
 } from './router-reducer-types'
 import { isNavigatingToNewRootLayout } from './is-navigating-to-new-root-layout'
@@ -79,6 +80,9 @@ export type NavigationTask = {
   // part of a "default" parallel slot that was reused during a navigation.
   refreshState: RefreshState | null
   children: Map<string, NavigationTask> | null
+  // The scroll behavior from the original navigation. Used to propagate
+  // scroll={false} to server-patch retries triggered by tree mismatches.
+  scrollBehavior: ScrollBehavior
 }
 
 export const enum FreshnessPolicy {
@@ -579,6 +583,7 @@ function updateCacheNodeOnNavigation(
     ),
     refreshState,
     children: taskChildren,
+    scrollBehavior: ScrollBehavior.Default,
   }
 }
 
@@ -745,6 +750,7 @@ function createCacheNodeOnNavigation(
     // track the refresh URL.
     refreshState: null,
     children: taskChildren,
+    scrollBehavior: ScrollBehavior.Default,
   }
 }
 
@@ -1527,7 +1533,8 @@ async function finishNavigationTask(
         primaryRequestResult.seed,
         task.route,
         routeCacheEntry,
-        navigateType
+        navigateType,
+        task.scrollBehavior
       )
       return
     }
@@ -1549,7 +1556,8 @@ async function finishNavigationTask(
         primaryRequestResult.seed,
         task.route,
         routeCacheEntry,
-        navigateType
+        navigateType,
+        task.scrollBehavior
       )
       return
     }
@@ -1619,7 +1627,9 @@ function dispatchRetryDueToTreeMismatch(
   // a dynamic rewrite so future predictions bail out.
   routeCacheEntry: FulfilledRouteCacheEntry | null,
   // The original navigation's push/replace intent.
-  originalNavigateType: 'push' | 'replace'
+  originalNavigateType: 'push' | 'replace',
+  // The original navigation's scroll behavior so retries respect scroll={false}.
+  scrollBehavior: ScrollBehavior
 ) {
   // If the navigation used a route prediction, mark it as having a dynamic
   // rewrite since it resulted in a mismatch.
@@ -1687,6 +1697,7 @@ function dispatchRetryDueToTreeMismatch(
     seed,
     mpa: isHardRetry,
     navigateType: retryNavigateType,
+    scrollBehavior,
   }
   dispatchAppRouterAction(retryAction)
 }

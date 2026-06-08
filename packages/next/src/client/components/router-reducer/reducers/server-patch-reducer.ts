@@ -42,7 +42,7 @@ export function serverPatchReducer(
   // using the tree we just received from the server.
   const retryCanonicalUrl = createHrefFromUrl(retryUrl)
   const retryNextUrl = action.nextUrl
-  const scrollBehavior = ScrollBehavior.Default
+  const scrollBehavior = action.scrollBehavior
   const now = Date.now()
   return navigateToKnownRoute(
     now,
