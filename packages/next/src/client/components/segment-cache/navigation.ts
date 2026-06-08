@@ -225,7 +225,8 @@ export function navigateToKnownRoute(
   // In these cases, if a mismatch occurs, we still mark the route as having a
   // dynamic rewrite by traversing the known route tree (see
   // dispatchRetryDueToTreeMismatch).
-  routeCacheEntry: FulfilledRouteCacheEntry | null
+  routeCacheEntry: FulfilledRouteCacheEntry | null,
+  signal?: AbortSignal
 ): AppRouterState {
   // A version of navigate() that accepts the target route tree as an argument
   // rather than reading it from the prefetch cache.
@@ -276,7 +277,8 @@ export function navigateToKnownRoute(
         freshnessPolicy,
         accumulation,
         routeCacheEntry,
-        navigateType
+        navigateType,
+        signal
       )
     }
     return completeSoftNavigation(

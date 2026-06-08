@@ -1118,6 +1118,7 @@ export interface ExperimentalConfig {
    * Allows previously fetched data to be re-used when editing server components.
    */
   serverComponentsHmrCache?: boolean
+  serverComponentsHmrCancellation?: boolean
 
   /**
    * Render <style> tags inline in the HTML for imported CSS assets.
@@ -2063,6 +2064,7 @@ export const defaultConfig = Object.freeze({
     reactDebugChannel: true,
     staticGenerationRetryCount: undefined,
     serverComponentsHmrCache: true,
+    serverComponentsHmrCancellation: true,
     staticGenerationMaxConcurrency: 8,
     staticGenerationMinPagesPerWorker: 25,
     transitionIndicator: false,
@@ -2168,6 +2170,7 @@ export interface NextConfigRuntime {
     | 'disableOptimizedLoading'
     | 'largePageDataBytes'
     | 'serverComponentsHmrCache'
+    | 'serverComponentsHmrCancellation'
     | 'caseSensitiveRoutes'
     | 'validateRSCRequestHeaders'
     | 'sri'
@@ -2237,6 +2240,7 @@ export function getNextConfigRuntime(
     disableOptimizedLoading: ex.disableOptimizedLoading,
     largePageDataBytes: ex.largePageDataBytes,
     serverComponentsHmrCache: ex.serverComponentsHmrCache,
+    serverComponentsHmrCancellation: ex.serverComponentsHmrCancellation,
     caseSensitiveRoutes: ex.caseSensitiveRoutes,
     validateRSCRequestHeaders: ex.validateRSCRequestHeaders,
     sri: ex.sri,

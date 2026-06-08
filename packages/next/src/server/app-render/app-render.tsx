@@ -172,7 +172,9 @@ import {
   getClientComponentLoaderMetrics,
   wrapClientComponentLoader,
 } from '../client-component-renderer-logger'
-import { isNodeNextRequest } from '../base-http/helpers'
+import { isNodeNextRequest, isNodeNextResponse } from '../base-http/helpers'
+import { signalFromNodeResponse } from '../web/spec-extension/adapters/next-request'
+import { isAbortError } from '../pipe-readable'
 import {
   parseRelativeUrl,
   type ParsedRelativeUrl,
@@ -1489,6 +1491,25 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
     setCacheStatus,
     isBuildTimePrerendering = false,
   } = renderOpts
+  const hmrRequestAbortSignal =
+    renderOpts.experimental.serverComponentsHmrCancellation &&
+    initialRequestStore.isHmrRefresh === true &&
+    isNodeNextResponse(ctx.res)
+      ? signalFromNodeResponse(ctx.res.originalResponse)
+      : undefined
+  const createAbortedRenderResult = () =>
+    new FlightRenderResult(
+      new ReadableStream({
+        start(controller) {
+          controller.close()
+        },
+      }),
+      { fetchMetrics: workStore.fetchMetrics }
+    )
+
+  if (hmrRequestAbortSignal?.aborted) {
+    return createAbortedRenderResult()
+  }
 
   let didErrorObservably = false
   function onFlightDataRenderError(err: DigestedError, silenceLog: boolean) {
@@ -1512,6 +1533,7 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
   // instant configs exist, since we render all the layouts necessary to perform
   // the validation in those cases.
   const shouldValidate =
+    !hmrRequestAbortSignal?.aborted &&
     !isBypassingCachesInDev(initialRequestStore, workStore) &&
     (initialRequestStore.isHmrRefresh === true ||
       (await anySegmentNeedsInstantValidationInDev(loaderTree)))
@@ -1559,6 +1581,35 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
       setCacheStatus('ready', htmlRequestId)
     }
 
+    const renderResult = await (
+      process.env.__NEXT_USE_NODE_STREAMS
+        ? renderWithRestartOnCacheMissInDevNode(
+            ctx,
+            initialRequestStore,
+            createRequestStore,
+            getPayload,
+            onError,
+            hmrRequestAbortSignal
+          )
+        : renderWithRestartOnCacheMissInDevWeb(
+            ctx,
+            initialRequestStore,
+            createRequestStore,
+            getPayload,
+            onError,
+            hmrRequestAbortSignal
+          )
+    ).catch((err) => {
+      if (hmrRequestAbortSignal?.aborted && isAbortError(err)) {
+        return null
+      }
+      throw err
+    })
+
+    if (renderResult === null) {
+      return createAbortedRenderResult()
+    }
+
     const {
       stream: serverStream,
       accumulatedChunksPromise,
@@ -1568,21 +1619,14 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
       runtimeStageEndTime,
       debugChannel: returnedDebugChannel,
       requestStore: finalRequestStore,
-    } = await (process.env.__NEXT_USE_NODE_STREAMS
-      ? renderWithRestartOnCacheMissInDevNode(
-          ctx,
-          initialRequestStore,
-          createRequestStore,
-          getPayload,
-          onError
-        )
-      : renderWithRestartOnCacheMissInDevWeb(
-          ctx,
-          initialRequestStore,
-          createRequestStore,
-          getPayload,
-          onError
-        ))
+    } = renderResult
+
+    if (hmrRequestAbortSignal?.aborted) {
+      accumulatedChunksPromise.catch(() => {})
+      return new FlightRenderResult(serverStream, {
+        fetchMetrics: workStore.fetchMetrics,
+      })
+    }
 
     if (shouldValidate) {
       let validationDebugChannelClient: AnyStream | undefined = undefined
@@ -1603,7 +1647,8 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
         finalRequestStore,
         fallbackParams,
         validationDebugChannelClient,
-        didErrorObservably
+        didErrorObservably,
+        hmrRequestAbortSignal
       )
     } else {
       logValidationSkipped(ctx)
@@ -1617,6 +1662,10 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
       // for the full stream to finish accumulating so we also catch errors from
       // the dynamic stage.
       void accumulatedChunksPromise.then(() => {
+        if (hmrRequestAbortSignal?.aborted) {
+          return
+        }
+
         const { invalidDynamicUsageError } = workStore
         // Forward only if userland caught the rejection. If userland didn't
         // catch, the rejection propagated into the React render and React's
@@ -4769,12 +4818,82 @@ async function renderToStream(
   /* eslint-enable @next/internal/no-ambiguous-jsx */
 }
 
+function abortControllerOnSignal(
+  controller: AbortController,
+  signal: AbortSignal | undefined
+): void {
+  if (!signal) {
+    return
+  }
+
+  const abort = () => controller.abort(signal.reason)
+  if (signal.aborted) {
+    abort()
+  } else {
+    signal.addEventListener('abort', abort, { once: true })
+  }
+}
+
+function abortRenderControllersOnSignal(
+  reactController: AbortController,
+  dataController: AbortController,
+  signal: AbortSignal | undefined
+): void {
+  if (!signal) {
+    return
+  }
+
+  const abortOutput = () => {
+    const reason = signal.reason
+
+    // Stop consuming output before aborting React. React emits terminal Flight
+    // chunks during abort, which must not race with a closing HMR response.
+    dataController.abort(reason)
+    return reason
+  }
+  if (signal.aborted) {
+    reactController.abort(abortOutput())
+  } else {
+    signal.addEventListener(
+      'abort',
+      () => {
+        const reason = abortOutput()
+        queueMicrotask(() => reactController.abort(reason))
+      },
+      { once: true }
+    )
+  }
+}
+
+async function waitForCacheReadyOrRequestAbort(
+  cacheSignal: CacheSignal,
+  requestAbortSignal: AbortSignal | undefined
+): Promise<boolean> {
+  if (!requestAbortSignal) {
+    await cacheSignal.cacheReady()
+    return false
+  }
+  if (requestAbortSignal.aborted) {
+    return true
+  }
+
+  return new Promise((resolve) => {
+    const onAbort = () => resolve(true)
+    requestAbortSignal.addEventListener('abort', onAbort, { once: true })
+    cacheSignal.cacheReady().then(() => {
+      requestAbortSignal.removeEventListener('abort', onAbort)
+      resolve(false)
+    })
+  })
+}
+
 async function renderWithRestartOnCacheMissInDevWeb(
   ctx: AppRenderContext,
   initialRequestStore: RequestStore,
   createRequestStore: () => RequestStore,
   getPayload: (requestStore: RequestStore) => Promise<RSCPayload>,
-  onError: (error: unknown) => void
+  onError: (error: unknown) => void,
+  requestAbortSignal?: AbortSignal
 ) {
   const { htmlRequestId, renderOpts } = ctx
 
@@ -4875,13 +4994,9 @@ async function renderWithRestartOnCacheMissInDevWeb(
       // If we abort the render, we want to reject the stage-dependent promises as well.
       // Note that we want to install this listener after the render is started
       // so that it runs after react is finished running its abort code.
-      initialReactController.signal.addEventListener(
-        'abort',
-        () => {
-          const { reason } = initialReactController.signal
-          initialDataController.abort(reason)
-        },
-        { once: true }
+      abortControllerOnSignal(
+        initialDataController,
+        initialReactController.signal
       )
 
       const stream = streamPair[0]
@@ -4896,12 +5011,17 @@ async function renderWithRestartOnCacheMissInDevWeb(
         () => {
           accumulatedChunksPromise.catch(() => {})
           if (stream instanceof ReadableStream) {
-            stream.cancel()
+            void stream.cancel().catch(() => {})
           } else {
             stream.destroy()
           }
         },
         { once: true }
+      )
+      abortRenderControllersOnSignal(
+        initialReactController,
+        initialDataController,
+        requestAbortSignal
       )
 
       return {
@@ -4934,19 +5054,20 @@ async function renderWithRestartOnCacheMissInDevWeb(
       advanceStageIfNoCacheMiss(RenderStage.Dynamic)
     }
   )
+  const getInitialRenderResult = () => ({
+    stream: initialStreamResult.stream,
+    accumulatedChunksPromise: initialStreamResult.accumulatedChunksPromise,
+    syncInterruptReason: initialStageController.getSyncInterruptReason(),
+    startTime,
+    staticStageEndTime: initialStageController.getStaticStageEndTime(),
+    runtimeStageEndTime: initialStageController.getRuntimeStageEndTime(),
+    debugChannel,
+    requestStore,
+  })
 
   if (initialStageController.currentStage !== RenderStage.Abandoned) {
     // No cache misses. We can use the result as-is.
-    return {
-      stream: initialStreamResult.stream,
-      accumulatedChunksPromise: initialStreamResult.accumulatedChunksPromise,
-      syncInterruptReason: initialStageController.getSyncInterruptReason(),
-      startTime,
-      staticStageEndTime: initialStageController.getStaticStageEndTime(),
-      runtimeStageEndTime: initialStageController.getRuntimeStageEndTime(),
-      debugChannel,
-      requestStore,
-    }
+    return getInitialRenderResult()
   }
 
   if (process.env.__NEXT_DEV_SERVER && setCacheStatus) {
@@ -4962,7 +5083,9 @@ async function renderWithRestartOnCacheMissInDevWeb(
   // Ideally we'd only wait for caches that are needed in the static stage.
   // This will be optimized in the future by not allowing runtime/dynamic APIs to resolve.
 
-  await cacheSignal.cacheReady()
+  if (await waitForCacheReadyOrRequestAbort(cacheSignal, requestAbortSignal)) {
+    return getInitialRenderResult()
+  }
   workUnitAsyncStorage.run(
     requestStore,
     initialReactController.abort.bind(initialReactController)
@@ -4977,12 +5100,15 @@ async function renderWithRestartOnCacheMissInDevWeb(
 
   const finalStageController = new StagedRenderingController({
     // We are going to render this pass all the way through because we've already
-    // filled any caches so we won't be aborting this time.
+    // filled any caches so cache misses won't abort this time. The response signal
+    // independently aborts the React render and stream accumulation.
     abortSignal: null,
     abandonController: null,
     shouldTrackSyncIO: true,
     finalStage: null,
   })
+  const finalReactController = new AbortController()
+  const finalDataController = new AbortController()
 
   // We've filled the caches, so now we can render as usual,
   // without any cache-filling mechanics.
@@ -5005,6 +5131,9 @@ async function renderWithRestartOnCacheMissInDevWeb(
   // Note: The stage controller starts out in the `Before` stage,
   // where sync IO does not cause aborts, so it's okay if it happens before render.
   const finalRscPayload = await getPayload(requestStore)
+  if (requestAbortSignal?.aborted) {
+    return getInitialRenderResult()
+  }
 
   const finalStreamResult = await runInSequentialTasks(
     () => {
@@ -5024,17 +5153,39 @@ async function renderWithRestartOnCacheMissInDevWeb(
             startTime,
             filterStackFrame,
             debugChannel: debugChannel?.serverSide,
+            signal: finalReactController.signal,
           }
         )
       )
 
+      abortControllerOnSignal(finalDataController, finalReactController.signal)
+      const stream = streamPair[0]
+      const accumulatedChunksPromise = accumulateStreamChunks(
+        streamPair[1],
+        finalStageController,
+        finalDataController.signal
+      )
+      finalDataController.signal.addEventListener(
+        'abort',
+        () => {
+          accumulatedChunksPromise.catch(() => {})
+          if (stream instanceof ReadableStream) {
+            void stream.cancel().catch(() => {})
+          } else {
+            stream.destroy()
+          }
+        },
+        { once: true }
+      )
+      abortRenderControllersOnSignal(
+        finalReactController,
+        finalDataController,
+        requestAbortSignal
+      )
+
       return {
-        stream: streamPair[0],
-        accumulatedChunksPromise: accumulateStreamChunks(
-          streamPair[1],
-          finalStageController,
-          null
-        ),
+        stream,
+        accumulatedChunksPromise,
       }
     },
     () => {
@@ -5107,7 +5258,8 @@ async function renderWithRestartOnCacheMissInDevNode(
   initialRequestStore: RequestStore,
   createRequestStore: () => RequestStore,
   getPayload: (requestStore: RequestStore) => Promise<RSCPayload>,
-  onError: (error: unknown) => void
+  onError: (error: unknown) => void,
+  requestAbortSignal?: AbortSignal
 ) {
   const { htmlRequestId, renderOpts } = ctx
 
@@ -5207,13 +5359,9 @@ async function renderWithRestartOnCacheMissInDevNode(
       // If we abort the render, we want to reject the stage-dependent promises as well.
       // Note that we want to install this listener after the render is started
       // so that it runs after react is finished running its abort code.
-      initialReactController.signal.addEventListener(
-        'abort',
-        () => {
-          const { reason } = initialReactController.signal
-          initialDataController.abort(reason)
-        },
-        { once: true }
+      abortControllerOnSignal(
+        initialDataController,
+        initialReactController.signal
       )
 
       const stream = replayable.createReplayStream()
@@ -5230,6 +5378,11 @@ async function renderWithRestartOnCacheMissInDevNode(
           stream.destroy()
         },
         { once: true }
+      )
+      abortRenderControllersOnSignal(
+        initialReactController,
+        initialDataController,
+        requestAbortSignal
       )
 
       return {
@@ -5262,19 +5415,20 @@ async function renderWithRestartOnCacheMissInDevNode(
       advanceStageIfNoCacheMiss(RenderStage.Dynamic)
     }
   )
+  const getInitialRenderResult = () => ({
+    stream: initialStreamResult.stream,
+    accumulatedChunksPromise: initialStreamResult.accumulatedChunksPromise,
+    syncInterruptReason: initialStageController.getSyncInterruptReason(),
+    startTime,
+    staticStageEndTime: initialStageController.getStaticStageEndTime(),
+    runtimeStageEndTime: initialStageController.getRuntimeStageEndTime(),
+    debugChannel,
+    requestStore,
+  })
 
   if (initialStageController.currentStage !== RenderStage.Abandoned) {
     // No cache misses. We can use the result as-is.
-    return {
-      stream: initialStreamResult.stream,
-      accumulatedChunksPromise: initialStreamResult.accumulatedChunksPromise,
-      syncInterruptReason: initialStageController.getSyncInterruptReason(),
-      startTime,
-      staticStageEndTime: initialStageController.getStaticStageEndTime(),
-      runtimeStageEndTime: initialStageController.getRuntimeStageEndTime(),
-      debugChannel,
-      requestStore,
-    }
+    return getInitialRenderResult()
   }
 
   if (process.env.__NEXT_DEV_SERVER && setCacheStatus) {
@@ -5290,7 +5444,9 @@ async function renderWithRestartOnCacheMissInDevNode(
   // Ideally we'd only wait for caches that are needed in the static stage.
   // This will be optimized in the future by not allowing runtime/dynamic APIs to resolve.
 
-  await cacheSignal.cacheReady()
+  if (await waitForCacheReadyOrRequestAbort(cacheSignal, requestAbortSignal)) {
+    return getInitialRenderResult()
+  }
   workUnitAsyncStorage.run(
     requestStore,
     initialReactController.abort.bind(initialReactController)
@@ -5305,12 +5461,15 @@ async function renderWithRestartOnCacheMissInDevNode(
 
   const finalStageController = new StagedRenderingController({
     // We are going to render this pass all the way through because we've already
-    // filled any caches so we won't be aborting this time.
+    // filled any caches so cache misses won't abort this time. The response signal
+    // independently aborts the React render and stream accumulation.
     abortSignal: null,
     abandonController: null,
     shouldTrackSyncIO: true,
     finalStage: null,
   })
+  const finalReactController = new AbortController()
+  const finalDataController = new AbortController()
 
   // We've filled the caches, so now we can render as usual,
   // without any cache-filling mechanics.
@@ -5333,6 +5492,9 @@ async function renderWithRestartOnCacheMissInDevNode(
   // Note: The stage controller starts out in the `Before` stage,
   // where sync IO does not cause aborts, so it's okay if it happens before render.
   const finalRscPayload = await getPayload(requestStore)
+  if (requestAbortSignal?.aborted) {
+    return getInitialRenderResult()
+  }
 
   const finalStreamResult = await runInSequentialTasks(
     () => {
@@ -5351,17 +5513,34 @@ async function renderWithRestartOnCacheMissInDevNode(
           startTime,
           filterStackFrame,
           debugChannel: debugChannel?.serverSide,
+          signal: finalReactController.signal,
         }
       ) as Readable
       const finalReplayable = new ReplayableNodeStream(finalSourceStream)
+      abortControllerOnSignal(finalDataController, finalReactController.signal)
+      const stream = finalReplayable.createReplayStream()
+      const accumulatedChunksPromise = accumulateStreamChunks(
+        finalReplayable.createReplayStream(),
+        finalStageController,
+        finalDataController.signal
+      )
+      finalDataController.signal.addEventListener(
+        'abort',
+        () => {
+          accumulatedChunksPromise.catch(() => {})
+          stream.destroy()
+        },
+        { once: true }
+      )
+      abortRenderControllersOnSignal(
+        finalReactController,
+        finalDataController,
+        requestAbortSignal
+      )
 
       return {
-        stream: finalReplayable.createReplayStream(),
-        accumulatedChunksPromise: accumulateStreamChunks(
-          finalReplayable.createReplayStream(),
-          finalStageController,
-          null
-        ),
+        stream,
+        accumulatedChunksPromise,
       }
     },
     () => {
@@ -5821,26 +6000,35 @@ function logValidationSkipped(ctx: AppRenderContext) {
 async function spawnStaticShellValidationInDev(
   ...args: Parameters<typeof spawnStaticShellValidationInDevImpl>
 ) {
-  if (process.env.__NEXT_TEST_MODE && process.env.NEXT_TEST_LOG_VALIDATION) {
-    const ctx: AppRenderContext = args[5]
-    const requestId = ctx.requestId
-    const url = ctx.url.href
-    console.log(
-      '<VALIDATION_MESSAGE>' +
-        JSON.stringify({ type: 'validation_start', requestId, url }) +
-        '</VALIDATION_MESSAGE>'
-    )
-    try {
-      return await spawnStaticShellValidationInDevImpl(...args)
-    } finally {
+  const requestAbortSignal = args[10]
+
+  try {
+    if (process.env.__NEXT_TEST_MODE && process.env.NEXT_TEST_LOG_VALIDATION) {
+      const ctx: AppRenderContext = args[5]
+      const requestId = ctx.requestId
+      const url = ctx.url.href
       console.log(
         '<VALIDATION_MESSAGE>' +
-          JSON.stringify({ type: 'validation_end', requestId, url }) +
+          JSON.stringify({ type: 'validation_start', requestId, url }) +
           '</VALIDATION_MESSAGE>'
       )
+      try {
+        return await spawnStaticShellValidationInDevImpl(...args)
+      } finally {
+        console.log(
+          '<VALIDATION_MESSAGE>' +
+            JSON.stringify({ type: 'validation_end', requestId, url }) +
+            '</VALIDATION_MESSAGE>'
+        )
+      }
+    } else {
+      return await spawnStaticShellValidationInDevImpl(...args)
     }
-  } else {
-    return await spawnStaticShellValidationInDevImpl(...args)
+  } catch (err) {
+    if (requestAbortSignal?.aborted && isAbortError(err)) {
+      return
+    }
+    throw err
   }
 }
 
@@ -5860,8 +6048,14 @@ async function spawnStaticShellValidationInDevImpl(
   requestStore: RequestStore,
   fallbackRouteParams: OpaqueFallbackRouteParams | null,
   debugChannelClient: AnyStream | undefined,
-  devRenderDidError: boolean
+  devRenderDidError: boolean,
+  requestAbortSignal?: AbortSignal
 ): Promise<void> {
+  if (requestAbortSignal?.aborted) {
+    return
+  }
+  const isRequestAborted = () => requestAbortSignal?.aborted === true
+
   const debug =
     process.env.NEXT_PRIVATE_DEBUG_VALIDATION === '1' ? console.log : undefined
 
@@ -5891,14 +6085,20 @@ async function spawnStaticShellValidationInDevImpl(
     // `serverComponentsErrorHandler` already stamped a digest on the error and
     // emitted it as a Flight error chunk — surfacing it again here would
     // duplicate the entry in the dev overlay.
-    if (!(invalidDynamicUsageError as { digest?: unknown }).digest) {
+    if (
+      !isRequestAborted() &&
+      !(invalidDynamicUsageError as { digest?: unknown }).digest
+    ) {
       return logMessagesAndSendErrorsToBrowser([invalidDynamicUsageError], ctx)
     }
     return
   }
 
   if (syncInterruptReason) {
-    return logMessagesAndSendErrorsToBrowser([syncInterruptReason], ctx)
+    if (!isRequestAborted()) {
+      return logMessagesAndSendErrorsToBrowser([syncInterruptReason], ctx)
+    }
+    return
   }
 
   let debugChunks: Uint8Array[] | null = null
@@ -5912,10 +6112,17 @@ async function spawnStaticShellValidationInDevImpl(
   }
 
   const accumulatedChunks = await accumulatedChunksPromise
+  if (requestAbortSignal?.aborted) {
+    return
+  }
+
   const { staticChunks, runtimeChunks, dynamicChunks } = accumulatedChunks
 
   const needsInstantValidation =
     await anySegmentNeedsInstantValidationInDev(loaderTree)
+  if (isRequestAborted()) {
+    return
+  }
 
   // `samples` from instant config are only used during build
   const validationSamples = null
@@ -5935,8 +6142,12 @@ async function spawnStaticShellValidationInDevImpl(
     fallbackRouteParams,
     ctx,
     validationSamples,
-    validationSampleTracking
+    validationSampleTracking,
+    requestAbortSignal
   )
+  if (isRequestAborted()) {
+    return
+  }
 
   debug?.(`Starting static shell validation...`)
 
@@ -5950,14 +6161,21 @@ async function spawnStaticShellValidationInDevImpl(
     allowEmptyStaticShell,
     ctx,
     hmrRefreshHash,
-    trackDynamicHoleInRuntimeShell
+    trackDynamicHoleInRuntimeShell,
+    requestAbortSignal
   )
+  if (isRequestAborted()) {
+    return
+  }
 
   if (runtimeResult.length > 0) {
     debug?.(`❌ Failed - ${runtimeResult.length} errors from runtime stage`)
     // We have something to report from the runtime validation
     // We can skip the rest
-    return logMessagesAndSendErrorsToBrowser(runtimeResult, ctx)
+    if (!isRequestAborted()) {
+      return logMessagesAndSendErrorsToBrowser(runtimeResult, ctx)
+    }
+    return
   }
 
   const staticResult = await validateStagedShell(
@@ -5970,14 +6188,21 @@ async function spawnStaticShellValidationInDevImpl(
     allowEmptyStaticShell,
     ctx,
     hmrRefreshHash,
-    trackDynamicHoleInStaticShell
+    trackDynamicHoleInStaticShell,
+    requestAbortSignal
   )
+  if (isRequestAborted()) {
+    return
+  }
 
   if (staticResult.length > 0) {
     debug?.(`❌ Failed - ${staticResult.length} errors from static stage`)
     // We have something to report from the static validation
     // We can skip the rest
-    return logMessagesAndSendErrorsToBrowser(staticResult, ctx)
+    if (!isRequestAborted()) {
+      return logMessagesAndSendErrorsToBrowser(staticResult, ctx)
+    }
+    return
   }
   debug?.(`✅ Passed`)
 
@@ -5991,10 +6216,11 @@ async function spawnStaticShellValidationInDevImpl(
       ctx,
       hmrRefreshHash,
       validationSamples,
-      devRenderDidError
+      devRenderDidError,
+      requestAbortSignal
     )
 
-    if (instantConfigsResult.length > 0) {
+    if (!isRequestAborted() && instantConfigsResult.length > 0) {
       return logMessagesAndSendErrorsToBrowser(instantConfigsResult, ctx)
     }
   }
@@ -6008,7 +6234,8 @@ async function warmupClientModulesForStagedValidation(
   fallbackRouteParams: OpaqueFallbackRouteParams | null,
   ctx: AppRenderContext,
   validationSamples: ValidationStoreClient['validationSamples'],
-  validationSampleTracking: ValidationStoreClient['validationSampleTracking']
+  validationSampleTracking: ValidationStoreClient['validationSampleTracking'],
+  requestAbortSignal?: AbortSignal
 ) {
   const { implicitTags, nonce, workStore } = ctx
 
@@ -6016,6 +6243,7 @@ async function warmupClientModulesForStagedValidation(
   const initialClientPrerenderController = new AbortController()
   const initialClientReactController = new AbortController()
   const initialClientRenderController = new AbortController()
+  abortControllerOnSignal(initialClientReactController, requestAbortSignal)
 
   const preinitScripts = () => {}
   const { ServerInsertedHTMLProvider } = createServerInsertedHTML()
@@ -6134,12 +6362,9 @@ async function warmupClientModulesForStagedValidation(
   // The listener to abort our own render controller must be added after React
   // has added its listener, to ensure that pending I/O is not
   // aborted/rejected too early.
-  initialClientReactController.signal.addEventListener(
-    'abort',
-    () => {
-      initialClientRenderController.abort()
-    },
-    { once: true }
+  abortControllerOnSignal(
+    initialClientRenderController,
+    initialClientReactController.signal
   )
 
   pendingInitialClientResult.catch((err: unknown) => {
@@ -6166,7 +6391,9 @@ async function warmupClientModulesForStagedValidation(
   // Promises passed to client were already awaited above (assuming that they came from cached functions)
   const cacheSignal = new CacheSignal()
   trackPendingModules(cacheSignal)
-  await cacheSignal.cacheReady()
+  if (await waitForCacheReadyOrRequestAbort(cacheSignal, requestAbortSignal)) {
+    return
+  }
   workUnitAsyncStorage.run(
     initialClientPrerenderStore,
     initialClientReactController.abort.bind(initialClientReactController)
@@ -6185,7 +6412,8 @@ async function validateStagedShell(
   hmrRefreshHash: string | undefined,
   trackDynamicHole:
     | typeof trackDynamicHoleInStaticShell
-    | typeof trackDynamicHoleInRuntimeShell
+    | typeof trackDynamicHoleInRuntimeShell,
+  requestAbortSignal?: AbortSignal
 ): Promise<Array<unknown>> {
   const { implicitTags, nonce, workStore } = ctx
 
@@ -6194,6 +6422,7 @@ async function validateStagedShell(
   )
   const clientReactController = new AbortController()
   const clientRenderController = new AbortController()
+  abortControllerOnSignal(clientReactController, requestAbortSignal)
 
   const preinitScripts = () => {}
   const { ServerInsertedHTMLProvider } = createServerInsertedHTML()
@@ -6288,12 +6517,9 @@ async function validateStagedShell(
         // The listener to abort our own render controller must be added after
         // React has added its listener, to ensure that pending I/O is not
         // aborted/rejected too early.
-        clientReactController.signal.addEventListener(
-          'abort',
-          () => {
-            clientRenderController.abort()
-          },
-          { once: true }
+        abortControllerOnSignal(
+          clientRenderController,
+          clientReactController.signal
         )
 
         return pendingFinalClientResult
@@ -6314,6 +6540,10 @@ async function validateStagedShell(
       allowEmptyStaticShell
     )
   } catch (thrownValue) {
+    if (requestAbortSignal?.aborted) {
+      return []
+    }
+
     // Even if the root errors we still want to report any cache components errors
     // that were discovered before the root errored.
     let errors: Array<unknown> = getStaticShellDisallowedDynamicReasons(
@@ -6351,8 +6581,13 @@ async function validateInstantConfigs(
   ctx: AppRenderContext,
   hmrRefreshHash: string | undefined,
   validationSamples: ValidationStoreClient['validationSamples'] | null,
-  devRenderDidError: boolean
+  devRenderDidError: boolean,
+  requestAbortSignal?: AbortSignal
 ): Promise<Array<unknown>> {
+  if (requestAbortSignal?.aborted) {
+    return []
+  }
+
   const debug =
     process.env.NEXT_PRIVATE_DEBUG_VALIDATION === '1' ? console.log : undefined
 
@@ -6382,24 +6617,37 @@ async function validateInstantConfigs(
     ? createNodeDebugChannel
     : createWebDebugChannel
 
+  let collectedSegmentData: Awaited<ReturnType<typeof collectStagedSegmentData>>
+  try {
+    collectedSegmentData = await collectStagedSegmentData(
+      ctx.componentMod,
+      renderFlightStream,
+      {
+        [RenderStage.Static]: accumulatedChunks.staticChunks,
+        [RenderStage.Runtime]: accumulatedChunks.runtimeChunks,
+        [RenderStage.Dynamic]: accumulatedChunks.dynamicChunks,
+      },
+      debugChunks,
+      startTime,
+      hasRuntimePrefetch,
+      clientReferenceManifest,
+      createDebugChannel,
+      requestAbortSignal
+    )
+  } catch (thrownValue) {
+    if (requestAbortSignal?.aborted) {
+      return []
+    }
+    throw thrownValue
+  }
   const {
     cache,
     payload: initialRscPayload,
     stageEndTimes,
-  } = await collectStagedSegmentData(
-    ctx.componentMod,
-    renderFlightStream,
-    {
-      [RenderStage.Static]: accumulatedChunks.staticChunks,
-      [RenderStage.Runtime]: accumulatedChunks.runtimeChunks,
-      [RenderStage.Dynamic]: accumulatedChunks.dynamicChunks,
-    },
-    debugChunks,
-    startTime,
-    hasRuntimePrefetch,
-    clientReferenceManifest,
-    createDebugChannel
-  )
+  } = collectedSegmentData
+  if (requestAbortSignal?.aborted) {
+    return []
+  }
 
   const { implicitTags, nonce, workStore } = ctx
   const isDebugChannelEnabled = !!ctx.renderOpts.setReactDebugChannel
@@ -6416,7 +6664,12 @@ async function validateInstantConfigs(
     groupDepthForValidation: number,
     previousBoundaryState: null | ValidationBoundaryTracking
   ): Promise<null | NavigationValidationResult> {
+    if (requestAbortSignal?.aborted) {
+      return null
+    }
+
     const extraChunksController = new AbortController()
+    abortControllerOnSignal(extraChunksController, requestAbortSignal)
 
     const boundaryState = createValidationBoundaryTracking()
     let useRuntimeStageForPartialSegments = false
@@ -6443,12 +6696,13 @@ async function validateInstantConfigs(
       useRuntimeStageForPartialSegments
     )
 
-    if (payloadResult === null) {
+    if (requestAbortSignal?.aborted || payloadResult === null) {
       return null
     }
 
     const reactController = new AbortController()
     const renderController = new AbortController()
+    abortControllerOnSignal(reactController, requestAbortSignal)
     const preinitScripts = () => {}
     const { ServerInsertedHTMLProvider } = createServerInsertedHTML()
 
@@ -6464,6 +6718,9 @@ async function validateInstantConfigs(
         isDebugChannelEnabled,
         createDebugChannel
       )
+    if (requestAbortSignal?.aborted) {
+      return null
+    }
 
     const instantValidationState = createInstantValidationState(
       payloadResult.slotStacks
@@ -6576,13 +6833,7 @@ async function validateInstantConfigs(
             }
           )
 
-          reactController.signal.addEventListener(
-            'abort',
-            () => {
-              renderController.abort()
-            },
-            { once: true }
-          )
+          abortControllerOnSignal(renderController, reactController.signal)
 
           return pendingResult
         },
@@ -6605,6 +6856,10 @@ async function validateInstantConfigs(
         devRenderDidError
       )
     } catch (thrownValue) {
+      if (requestAbortSignal?.aborted) {
+        return null
+      }
+
       result = getNavigationDisallowedDynamicReasons(
         workStore,
         PreludeState.Errored,
@@ -6624,7 +6879,11 @@ async function validateInstantConfigs(
       return result
     }
 
-    if (previousBoundaryState === null && payloadResult.hasAmbiguousErrors) {
+    if (
+      !requestAbortSignal?.aborted &&
+      previousBoundaryState === null &&
+      payloadResult.hasAmbiguousErrors
+    ) {
       // This is the first validation attempt. we prepared a payload where dynamic holes might be runtime data dependencies
       // or dynamic data dependencies. We do a followup validation using a payload with only Runtime segments to discriminate
       const dynamicOnlyResult = await validateAtDepthImpl(
@@ -6652,6 +6911,10 @@ async function validateInstantConfigs(
   let impairedValidation: null | Error | AggregateError = null
 
   for (let depth = maxDepth - 1; depth >= 0; depth--) {
+    if (requestAbortSignal?.aborted) {
+      return []
+    }
+
     const maxGroupDepth = groupDepthsByUrlDepth[depth]
 
     for (
@@ -6659,6 +6922,10 @@ async function validateInstantConfigs(
       currentGroupDepth >= 0;
       currentGroupDepth--
     ) {
+      if (requestAbortSignal?.aborted) {
+        return []
+      }
+
       debug?.(
         `Trying depth ${depth}` +
           (currentGroupDepth > 0
