@@ -290,6 +290,31 @@ import { isInstantValidationError } from './instant-validation/instant-validatio
 import { createPromiseWithResolvers } from '../../shared/lib/promise-with-resolvers'
 import { RENDER_STAGES_BY_DATA_KIND } from '../dynamic-rendering-utils'
 
+/**
+ * Determines whether streaming metadata should be served for this render.
+ *
+ * The metadata component tree has a different shape depending on whether
+ * streaming metadata is enabled (see `createMetadataComponents`). Prerenders
+ * always render with streaming metadata enabled (`serveStreamingMetadata` is
+ * set to `true` during build/export), so a render that resumes a postponed
+ * prerender must also render with it enabled — regardless of the requesting
+ * user agent — or React will detect a tree mismatch ("Expected the resume to
+ * render <div> in this slot but instead it rendered
+ * <__next_metadata_boundary__>") and fall back to client rendering.
+ *
+ * The user-agent based opt-out (HTML-limited bots receive blocking metadata)
+ * only applies to renders that produce the whole document in a single pass.
+ */
+function getServeStreamingMetadata(
+  renderOpts: Pick<RenderOpts, 'serveStreamingMetadata' | 'postponed'>
+): boolean {
+  if (typeof renderOpts.postponed === 'string') {
+    return true
+  }
+
+  return !!renderOpts.serveStreamingMetadata
+}
+
 export type GetDynamicParamFromSegment = (
   // The LoaderTree to extract the dynamic param from
   loaderTree: LoaderTree
@@ -632,7 +657,7 @@ async function generateDynamicRSCPayload(
     url,
   } = ctx
 
-  const serveStreamingMetadata = !!ctx.renderOpts.serveStreamingMetadata
+  const serveStreamingMetadata = getServeStreamingMetadata(ctx.renderOpts)
 
   if (!options?.skipPageRendering) {
     const preloadCallbacks: PreloadCallbacks = []
@@ -1960,7 +1985,7 @@ async function getRSCPayload(
     getDynamicParamFromSegment,
     query
   )
-  const serveStreamingMetadata = !!ctx.renderOpts.serveStreamingMetadata
+  const serveStreamingMetadata = getServeStreamingMetadata(ctx.renderOpts)
   const hasGlobalNotFound = !!tree[2]['global-not-found']
 
   const metadataIsRuntimePrefetchable =
@@ -2115,7 +2140,7 @@ async function getErrorRSCPayload(
   let Viewport: ComponentType | null = null
   let Metadata: ComponentType | null = null
   if (shouldRenderMetadataAndViewport) {
-    const serveStreamingMetadata = !!ctx.renderOpts.serveStreamingMetadata
+    const serveStreamingMetadata = getServeStreamingMetadata(ctx.renderOpts)
     const metadataIsRuntimePrefetchable =
       await anySegmentHasRuntimePrefetchEnabled(tree)
     const metadataComponents = createMetadataComponents({
