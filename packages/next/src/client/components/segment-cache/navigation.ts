@@ -7,6 +7,7 @@ import type {
 import type { CacheNode } from '../../../shared/lib/app-router-types'
 import type { HeadData } from '../../../shared/lib/app-router-types'
 import {
+  PrefetchHint,
   SubtreePrefetchHints,
   propagateSubtreeBits,
 } from '../../../shared/lib/app-router-types'
@@ -241,6 +242,52 @@ export function navigateToKnownRoute(
 ): AppRouterState {
   // A version of navigate() that accepts the target route tree as an argument
   // rather than reading it from the prefetch cache.
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    process.env.__NEXT_CACHE_COMPONENTS
+  ) {
+    // Warn when navigating via a `<Link prefetch={true}>` to a route that has
+    // not opted into Partial Prefetching. Such a link does a legacy "full"
+    // prefetch that includes the route's dynamic data, defeating the
+    // static/dynamic split that Cache Components provides.
+    //
+    // This runs at navigation time (rather than prefetch time) so that, in dev
+    // where we don't prefetch, the warning only appears when you actually
+    // navigate to the route — existing apps with many `prefetch={true}` links
+    // aren't flooded with warnings the moment they enable Cache Components.
+    const link = getLinkForCurrentNavigation()
+    if (
+      link !== null &&
+      link.fetchStrategy === FetchStrategy.Full &&
+      (navigationSeed.routeTree.prefetchHints &
+        PrefetchHint.SubtreeHasPartialPrefetching) ===
+        0
+    ) {
+      const error = new Error(
+        `A <Link prefetch={true}> navigated to "${url.pathname}", but Partial ` +
+          `Prefetching is not enabled for that route, so its dynamic data was ` +
+          `included in the prefetch. Enable Partial Prefetching app-wide by ` +
+          `setting \`partialPrefetching: true\` in next.config, or per-route by ` +
+          `exporting \`const prefetch = 'partial'\` from the page or layout.`
+      )
+      const ownerStack = 'ownerStack' in link ? link.ownerStack : undefined
+      if (ownerStack === undefined) {
+        console.error(
+          '' +
+            'Cannot associate the "prefetch={true}" warning with a specific <Link> making it harder to find the cause of the following warning. ' +
+            'This is a bug in Next.js.'
+        )
+      } else if (ownerStack !== null) {
+        // Replace the (useless) stack captured at the throw site — which
+        // points into router internals — with the Owner Stack captured when
+        // the <Link> rendered. That way the dev overlay associates this
+        // warning with the JSX that created the link, not with
+        // navigation.ts.
+        error.stack = `${error.name}: ${error.message}${ownerStack}`
+      }
+      console.error(error)
+    }
+  }
   const accumulation: NavigationRequestAccumulation = {
     separateRefreshUrls: null,
     scrollRef: null,
@@ -490,6 +537,7 @@ async function navigateToUnknownRoute(
             staticStageResponse.f,
             buildId,
             staticStageResponse.h,
+            staticStageResponse.r ?? null,
             staleAt,
             currentFlightRouterState,
             renderedSearch,
@@ -518,6 +566,7 @@ async function navigateToUnknownRoute(
               processed.buildId,
               processed.isResponsePartial,
               processed.headVaryParams,
+              processed.rootVaryParamsIterable,
               processed.staleAt,
               processed.navigationSeed,
               null
@@ -529,6 +578,21 @@ async function navigateToUnknownRoute(
           // navigation completed normally, we just won't cache runtime data.
         })
     }
+  }
+
+  // In the streaming dev render, this single response's seed content may still
+  // be streaming when we build the tree below. An unknown-route navigation
+  // places that content inline (it has no prior cache entry, so the server
+  // sends a full seed rather than the dynamic-only delta a known route gets),
+  // and that inline content is not gated like a known route's deferred RSCs. So
+  // React could read a still-pending chunk and flash a Suspense fallback
+  // (wanted on a cold cache, but not on a warm one). Wait for the shell to
+  // flush (`revealAfter`) first, so the inline seed content is decoded by the
+  // time React reads it, the same way the known-route path gates its deferred
+  // RSCs. `revealAfter` is null outside the streaming dev render. On a cache
+  // miss it resolves early, so the cold-cache fallback is still shown.
+  if (result.revealAfter !== null) {
+    await result.revealAfter
   }
 
   return navigateToKnownRoute(
