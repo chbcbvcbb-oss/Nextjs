@@ -3,7 +3,7 @@ import { retry } from 'next-test-utils'
 import stripAnsi from 'strip-ansi'
 
 const expectedTimeoutErrorMessage =
-  'Filling a cache during prerender timed out, likely because request-specific arguments such as params, searchParams, cookies() or dynamic data were used inside "use cache".'
+  'Filling a `"use cache"` entry took too long. The most common cause is reading request data (`params`, `searchParams`, `cookies()`, `headers()`) inside the cached function. Read it outside and pass what you need as an argument.\nLearn more: https://nextjs.org/docs/messages/next-request-in-use-cache'
 
 describe('use-cache-hanging', () => {
   const { next, isNextDev, skipped, isTurbopack } = nextTestSetup({
@@ -24,8 +24,9 @@ describe('use-cache-hanging', () => {
 
         await expect(browser).toDisplayCollapsedRedbox(`
          {
-           "code": "E236",
-           "description": "Filling a cache during prerender timed out, likely because request-specific arguments such as params, searchParams, cookies() or dynamic data were used inside "use cache".",
+           "code": "E1401",
+           "description": "Filling a \`"use cache"\` entry took too long. The most common cause is reading request data (\`params\`, \`searchParams\`, \`cookies()\`, \`headers()\`) inside the cached function. Read it outside and pass what you need as an argument.
+         Learn more: https://nextjs.org/docs/messages/next-request-in-use-cache",
            "environmentLabel": "Server",
            "label": "Console Error",
            "source": "app/static/page.tsx (1:1) @ getCachedData
@@ -53,8 +54,9 @@ describe('use-cache-hanging', () => {
 
         await expect(browser).toDisplayCollapsedRedbox(`
          {
-           "code": "E236",
-           "description": "Filling a cache during prerender timed out, likely because request-specific arguments such as params, searchParams, cookies() or dynamic data were used inside "use cache".",
+           "code": "E1401",
+           "description": "Filling a \`"use cache"\` entry took too long. The most common cause is reading request data (\`params\`, \`searchParams\`, \`cookies()\`, \`headers()\`) inside the cached function. Read it outside and pass what you need as an argument.
+         Learn more: https://nextjs.org/docs/messages/next-request-in-use-cache",
            "environmentLabel": "Server",
            "label": "Console Error",
            "source": "app/runtime/page.tsx (4:1) @ getCachedData
@@ -91,8 +93,9 @@ describe('use-cache-hanging', () => {
 
         await expect(browser).toDisplayCollapsedRedbox(`
          {
-           "code": "E236",
-           "description": "Filling a cache during prerender timed out, likely because request-specific arguments such as params, searchParams, cookies() or dynamic data were used inside "use cache".",
+           "code": "E1401",
+           "description": "Filling a \`"use cache"\` entry took too long. The most common cause is reading request data (\`params\`, \`searchParams\`, \`cookies()\`, \`headers()\`) inside the cached function. Read it outside and pass what you need as an argument.
+         Learn more: https://nextjs.org/docs/messages/next-request-in-use-cache",
            "environmentLabel": "Server",
            "label": "Console Error",
            "source": "app/static/page.tsx (1:1) @ getCachedData
@@ -124,8 +127,9 @@ describe('use-cache-hanging', () => {
 
         await expect(browser).toDisplayCollapsedRedbox(`
          {
-           "code": "E236",
-           "description": "Filling a cache during prerender timed out, likely because request-specific arguments such as params, searchParams, cookies() or dynamic data were used inside "use cache".",
+           "code": "E1401",
+           "description": "Filling a \`"use cache"\` entry took too long. The most common cause is reading request data (\`params\`, \`searchParams\`, \`cookies()\`, \`headers()\`) inside the cached function. Read it outside and pass what you need as an argument.
+         Learn more: https://nextjs.org/docs/messages/next-request-in-use-cache",
            "environmentLabel": "Server",
            "label": "Console Error",
            "source": "app/runtime/page.tsx (4:1) @ getCachedData
