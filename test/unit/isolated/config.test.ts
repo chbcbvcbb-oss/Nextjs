@@ -292,9 +292,7 @@ describe('config', () => {
           allowedDevOrigins: ['example.vercel.sh'],
         },
       })
-      expect(
-        config.experimental.serverActions?.allowedOrigins
-      ).toBeUndefined()
+      expect(config.experimental.serverActions?.allowedOrigins).toBeUndefined()
     })
   })
 })
