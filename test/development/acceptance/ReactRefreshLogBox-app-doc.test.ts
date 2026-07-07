@@ -114,7 +114,8 @@ describe('ReactRefreshLogBox _app _document', () => {
          "source": "./pages/_app.js (2:10)
        Error: Expression expected
        > 2 |   return <<Component {...pageProps} />;
-           |          ^^",
+           |          ^^
+       Expression expected",
          "stack": [],
        }
       `)
@@ -233,7 +234,8 @@ describe('ReactRefreshLogBox _app _document', () => {
          "source": "./pages/_document.js (3:36)
        Error: Unexpected token \`{\`. Expected identifier, string literal, numeric literal or [ for the computed key
        > 3 | class MyDocument extends Document {{
-           |                                    ^",
+           |                                    ^
+       Unexpected token \`{\`. Expected identifier, string literal, numeric literal or [ for the computed key",
          "stack": [],
        }
       `)

@@ -49,7 +49,15 @@ describe('pages/ error recovery', () => {
          "source": "./index.js (1:27)
        Error: Expected '>', got '<eof>'
        > 1 | export default () => <div/
-           |                           ^",
+           |                           ^
+       Expected '>', got '<eof>'
+       Import traces:
+         Browser:
+           ./index.js
+           ./pages/index.js
+         SSR:
+           ./index.js
+           ./pages/index.js",
          "stack": [],
        }
       `)
@@ -407,7 +415,15 @@ describe('pages/ error recovery', () => {
          "source": "./index.js (5:5)
        Error: Expected '{', got 'return'
        > 5 |     return <h1>Default Export</h1>;
-           |     ^^^^^^",
+           |     ^^^^^^
+       Expected '{', got 'return'
+       Import traces:
+         Browser:
+           ./index.js
+           ./pages/index.js
+         SSR:
+           ./index.js
+           ./pages/index.js",
          "stack": [],
        }
       `)
@@ -491,7 +507,15 @@ describe('pages/ error recovery', () => {
          "source": "./index.js (5:5)
        Error: Expected '{', got 'throw'
        > 5 |     throw new Error('nooo');
-           |     ^^^^^",
+           |     ^^^^^
+       Expected '{', got 'throw'
+       Import traces:
+         Browser:
+           ./index.js
+           ./pages/index.js
+         SSR:
+           ./index.js
+           ./pages/index.js",
          "stack": [],
        }
       `)
@@ -825,7 +849,15 @@ describe('pages/ error recovery', () => {
          "source": "./index.js (7:42)
        Error: Expected '}', got '<eof>'
        > 7 | export default function FunctionNamed() {
-           |                                          ^",
+           |                                          ^
+       Expected '}', got '<eof>'
+       Import traces:
+         Browser:
+           ./index.js
+           ./pages/index.js
+         SSR:
+           ./index.js
+           ./pages/index.js",
          "stack": [],
        }
       `)
@@ -890,7 +922,15 @@ describe('pages/ error recovery', () => {
          "source": "./index.js (7:42)
        Error: Expected '}', got '<eof>'
        > 7 | export default function FunctionNamed() {
-           |                                          ^",
+           |                                          ^
+       Expected '}', got '<eof>'
+       Import traces:
+         Browser:
+           ./index.js
+           ./pages/index.js
+         SSR:
+           ./index.js
+           ./pages/index.js",
          "stack": [],
        }
       `)
