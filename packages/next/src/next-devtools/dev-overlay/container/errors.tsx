@@ -191,7 +191,6 @@ type UnrenderedSegmentErrorDetails = {
 
 type LinkPrefetchPartialErrorDetails = {
   type: 'link-prefetch-partial'
-  pathname: string
 }
 
 const noErrorDetails: ErrorDetails = {
@@ -528,14 +527,11 @@ export function getLinkPrefetchPartialErrorDetails(
 ): LinkPrefetchPartialErrorDetails | null {
   const message = error.message
   if (typeof message !== 'string') return null
-  const match =
-    /^Next\.js encountered dynamic data during prefetching for "([^"]+)"\./.exec(
-      message
-    )
-  if (!match) return null
+  if (!message.includes('Next.js encountered a legacy full prefetch')) {
+    return null
+  }
   return {
     type: 'link-prefetch-partial',
-    pathname: match[1],
   }
 }
 
@@ -1201,7 +1197,7 @@ export function Errors({
         <ErrorOverlayLayout
           errorCode={errorCode}
           errorType={errorType}
-          errorMessage="Next.js encountered dynamic data during prefetching."
+          errorMessage="Next.js encountered a legacy full prefetch."
           headerChildren={
             <InstantHeaderExplanation kind="link-prefetch-partial" />
           }

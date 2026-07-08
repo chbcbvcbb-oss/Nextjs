@@ -20,7 +20,7 @@ export function createUnrenderedSegmentError(
 
 export function createLinkPrefetchPartialError(pathname: string): Error {
   return new Error(
-    `Next.js encountered dynamic data during prefetching for "${pathname}".\n\n` +
+    `Route "${pathname}": Next.js encountered a legacy full prefetch.\n\n` +
       `This will lead to slower, more expensive prefetches.\n\n` +
       `Ways to fix this:\n` +
       `  - [upgrade] Opt into Partial Prefetching by exporting \`const prefetch = 'partial'\` from the page or layout, or by setting \`partialPrefetching: true\` in next.config to opt the whole app in\n` +
