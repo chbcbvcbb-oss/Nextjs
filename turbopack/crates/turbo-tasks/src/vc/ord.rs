@@ -7,7 +7,6 @@ use std::{
 };
 
 use bincode::{Decode, Encode};
-use serde::{Deserialize, Serialize};
 
 use crate::{
     ResolvedVc, Vc,
@@ -26,8 +25,7 @@ use crate::{
 ///
 /// This can be useful to provide a cache key. Given a single instance of `turbo-tasks`, this will
 /// give stable results.
-#[derive(Serialize, Deserialize, Encode, Decode)]
-#[serde(transparent, bound = "")]
+#[derive(Encode, Decode)]
 #[bincode(bounds = "T: ?Sized")]
 #[repr(transparent)]
 pub struct OrdResolvedVc<T>
