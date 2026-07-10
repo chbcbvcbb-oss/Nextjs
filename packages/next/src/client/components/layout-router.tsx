@@ -84,6 +84,7 @@ const rectProperties = [
   'x',
   'y',
 ] as const
+
 /**
  * Check if a HTMLElement is hidden or fixed/sticky position
  */
@@ -99,6 +100,27 @@ function shouldSkipElement(element: HTMLElement) {
   // because `offsetParent` doesn't consider document/body
   const rect = element.getBoundingClientRect()
   return rectProperties.every((item) => rect[item] === 0)
+}
+
+/**
+ * Check if an element or any of its ancestors (up to the body) has
+ * position: sticky or position: fixed. This is used to prevent parallel
+ * route slots rendered in sticky/fixed headers from consuming the shared
+ * scrollRef, which would prevent the main content area from scrolling to
+ * top on navigation.
+ */
+function isInStickyOrFixedContainer(element: Element): boolean {
+  let current: Element | null = element
+  while (current && current !== document.body) {
+    if (current instanceof HTMLElement) {
+      const position = getComputedStyle(current).position
+      if (position === 'sticky' || position === 'fixed') {
+        return true
+      }
+    }
+    current = current.parentElement
+  }
+  return false
 }
 
 /**
@@ -195,6 +217,14 @@ class InnerScrollAndFocusHandlerOld extends React.Component<ScrollAndMaybeFocusH
       domNode = domNode.nextElementSibling
     }
 
+    // If this element is inside a sticky or fixed container (e.g. a parallel
+    // route rendered in a sticky header), skip this scroll handler without
+    // consuming the scrollRef. This allows the main content slot to handle
+    // the scroll instead.
+    if (isInStickyOrFixedContainer(domNode)) {
+      return
+    }
+
     // Mark as scrolled so no other segment scrolls for this navigation.
     scrollRef.current = false
 
@@ -257,6 +287,36 @@ class InnerScrollAndFocusHandlerOld extends React.Component<ScrollAndMaybeFocusH
 }
 
 /**
+ * Find the first child Element of a FragmentInstance by querying its client
+ * rects and using document.elementFromPoint to resolve a real DOM element.
+ * FragmentInstance does not expose parentElement or child references, so this
+ * is a workaround to locate an element we can walk up from for ancestor
+ * style checks (e.g. sticky/fixed container detection).
+ *
+ * Returns null if no element can be found (e.g. the fragment is empty or
+ * all children are outside the viewport).
+ */
+function findElementInFragment(fragment: FragmentInstance): Element | null {
+  const rects = fragment.getClientRects()
+  for (let i = 0; i < rects.length; i++) {
+    const rect = rects[i]
+    // Use the center of the rect to avoid hitting borders/edges of
+    // adjacent elements.
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+    const el = document.elementFromPoint(x, y)
+    if (
+      el !== null &&
+      el !== document.documentElement &&
+      el !== document.body
+    ) {
+      return el
+    }
+  }
+  return null
+}
+
+/**
  * Fork of InnerScrollAndFocusHandlerOld using Fragment refs for scrolling.
  * No longer focuses the first host descendant.
  */
@@ -286,6 +346,26 @@ function InnerScrollHandlerNew(props: ScrollAndMaybeFocusHandlerProps) {
       // If there is no DOM node this layout-router level is skipped. It'll be handled higher-up in the tree.
       if (instance === null) {
         return
+      }
+
+      // If this element is inside a sticky or fixed container (e.g. a parallel
+      // route rendered in a sticky header), skip this scroll handler without
+      // consuming the scrollRef. This allows the main content slot to handle
+      // the scroll instead.
+      {
+        const elementToCheck: Element | null =
+          instance instanceof Element
+            ? instance
+            : // FragmentInstance does not expose parentElement or child
+              // references, so we find a real DOM element within the
+              // fragment to walk up from.
+              findElementInFragment(instance)
+        if (
+          elementToCheck !== null &&
+          isInStickyOrFixedContainer(elementToCheck)
+        ) {
+          return
+        }
       }
 
       // Mark as scrolled so no other segment scrolls for this navigation.
