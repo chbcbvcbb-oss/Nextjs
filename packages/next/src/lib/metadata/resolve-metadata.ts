@@ -784,7 +784,18 @@ async function resolveMetadataItemsImpl(
       .join('/'),
   })
 
-  for (const key in parallelRoutes) {
+  // Process children first so named parallel route slots are pushed to
+  // metadataItems last. Since accumulateMetadata applies last-write-wins,
+  // named slots take precedence over children when both define metadata.
+  // This ensures deterministic behavior across webpack and Turbopack,
+  // which may construct loader trees with different key orderings.
+  const metadataParallelRouteKeys = Object.keys(parallelRoutes)
+  metadataParallelRouteKeys.sort((a, b) => {
+    if (a === 'children') return -1
+    if (b === 'children') return 1
+    return a.localeCompare(b)
+  })
+  for (const key of metadataParallelRouteKeys) {
     const childTree = parallelRoutes[key]
     await resolveMetadataItemsImpl(
       metadataItems,
@@ -902,7 +913,18 @@ async function resolveViewportItemsImpl(
       .join('/'),
   })
 
-  for (const key in parallelRoutes) {
+  // Process children first so named parallel route slots are pushed to
+  // viewportItems last. Since accumulateViewport applies last-write-wins,
+  // named slots take precedence over children when both define viewport.
+  // This ensures deterministic behavior across webpack and Turbopack,
+  // which may construct loader trees with different key orderings.
+  const viewportParallelRouteKeys = Object.keys(parallelRoutes)
+  viewportParallelRouteKeys.sort((a, b) => {
+    if (a === 'children') return -1
+    if (b === 'children') return 1
+    return a.localeCompare(b)
+  })
+  for (const key of viewportParallelRouteKeys) {
     const childTree = parallelRoutes[key]
     await resolveViewportItemsImpl(
       viewportItems,
