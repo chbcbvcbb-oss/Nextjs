@@ -67,7 +67,8 @@ export function createMetadataComponents({
   )
   const pathnameForMetadata = createServerPathnameForMetadata(
     pathname,
-    isRuntimePrefetchable
+    isRuntimePrefetchable,
+    interpolatedParams
   )
 
   async function Viewport() {
