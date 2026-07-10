@@ -200,6 +200,7 @@ export interface PrerenderStoreModernRuntime
    * renders where all stages run without sequencing.
    */
   readonly stagedRendering: StagedRenderingController | null
+  readonly isSessionShell: boolean
 
   readonly headers: RequestStore['headers']
   readonly cookies: RequestStore['cookies']

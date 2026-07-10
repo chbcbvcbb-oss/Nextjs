@@ -149,6 +149,7 @@ export function createServerSearchParamsForServerPage(
       case 'prerender-runtime':
         return createRuntimePrerenderSearchParams(
           underlyingSearchParams,
+          workStore,
           workUnitStore,
           varyParamsAccumulator,
           isRuntimePrefetchable
@@ -246,25 +247,36 @@ function createStaticPrerenderSearchParams(
 
 function createRuntimePrerenderSearchParams(
   underlyingSearchParams: SearchParams,
+  workStore: WorkStore,
   workUnitStore: PrerenderStoreModernRuntime,
   varyParamsAccumulator: VaryParamsAccumulator | null,
   isRuntimePrefetchable: boolean
 ): Promise<SearchParams> {
-  const underlyingSearchParamsWithVarying =
+  const userspaceSearchParams =
     varyParamsAccumulator !== null
       ? createVaryingSearchParams(varyParamsAccumulator, underlyingSearchParams)
       : underlyingSearchParams
 
-  const result = makeUntrackedSearchParams(underlyingSearchParamsWithVarying)
   const { stagedRendering } = workUnitStore
   if (!stagedRendering) {
-    return result
+    // If there's no staging, we're in a prospective runtime prerender.
+    if (workUnitStore.isSessionShell) {
+      // If we're warming up for a session shell, params should hang,
+      // because they'll be a hanging input in the final prerender.
+      return makeHangingSearchParams(workStore, workUnitStore)
+    } else {
+      return makeUntrackedSearchParams(userspaceSearchParams)
+    }
   }
   const searchParamsStages = RENDER_STAGES_BY_DATA_KIND.runtimeLinkData
   const stage = isRuntimePrefetchable
     ? searchParamsStages.early
     : searchParamsStages.late
-  return stagedRendering.waitForStage(stage).then(() => result)
+  return stagedRendering.delayUntilStage(
+    stage,
+    'searchParams',
+    userspaceSearchParams
+  )
 }
 
 function createRenderSearchParams(
@@ -375,7 +387,7 @@ const CachedSearchParamsForUseCache = new WeakMap<
 
 function makeHangingSearchParams(
   workStore: WorkStore,
-  prerenderStore: PrerenderStoreModern
+  prerenderStore: PrerenderStoreModern | PrerenderStoreModernRuntime
 ): Promise<SearchParams> {
   const cachedSearchParams = CachedSearchParams.get(prerenderStore)
   if (cachedSearchParams) {
