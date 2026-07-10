@@ -226,6 +226,7 @@ export const experimentalSchema = {
     .union([z.boolean(), z.literal('allow-runtime')])
     .optional(),
   dynamicOnHover: z.boolean().optional(),
+  turbopackPrefetchInDev: z.boolean().optional(),
   useOffline: z.boolean().optional(),
   optimisticRouting: z.boolean().optional(),
   instrumentationClientRouterTransitionEvents: z.boolean().optional(),

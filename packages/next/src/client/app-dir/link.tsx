@@ -719,7 +719,10 @@ export default function LinkComponent(
       if (!router) {
         return
       }
-      if (!prefetchEnabled || process.env.NODE_ENV === 'development') {
+      if (!prefetchEnabled) {
+        return
+      }
+      if (!process.env.__NEXT_PREFETCH) {
         return
       }
 
