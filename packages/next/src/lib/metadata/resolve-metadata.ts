@@ -18,6 +18,7 @@ import type {
   AbsoluteTemplateString,
   IconDescriptor,
   ResolvedIcons,
+  TemplateString,
 } from './types/metadata-types'
 import type { ParsedUrlQuery } from 'querystring'
 import type { StaticMetadata } from './types/icons'
@@ -1125,6 +1126,14 @@ function freezeInDev<T extends object>(obj: T): T {
   return obj
 }
 
+/**
+ * Returns true when the given title value is an object that explicitly defines
+ * a `template` key (i.e. it is a TemplateString, not a plain string).
+ */
+const definesTemplate = (
+  title: string | TemplateString | null | undefined
+): boolean => title != null && typeof title !== 'string' && 'template' in title
+
 export async function accumulateMetadata(
   route: string,
   metadataItems: MetadataItems,
@@ -1198,10 +1207,21 @@ export async function accumulateMetadata(
     // If the layout is the same layer with page, skip the leaf layout and leaf page
     // The leaf layout and page are the last two items
     if (i < metadataItems.length - 2) {
+      // Only update a title template when the metadata item explicitly defines
+      // one (i.e. the title value is an object with a "template" key). Pages
+      // that only set a plain string title must not reset the parent layout's
+      // template to null, because sibling parallel-route pages still need that
+      // template applied (see #77888).
       titleTemplates = {
-        title: resolvedMetadata.title?.template || null,
-        openGraph: resolvedMetadata.openGraph?.title.template || null,
-        twitter: resolvedMetadata.twitter?.title.template || null,
+        title: definesTemplate(metadata?.title)
+          ? resolvedMetadata.title?.template || null
+          : titleTemplates.title,
+        openGraph: definesTemplate(metadata?.openGraph?.title)
+          ? resolvedMetadata.openGraph?.title.template || null
+          : titleTemplates.openGraph,
+        twitter: definesTemplate(metadata?.twitter?.title)
+          ? resolvedMetadata.twitter?.title.template || null
+          : titleTemplates.twitter,
       }
     }
   }
