@@ -378,6 +378,7 @@ export const experimentalSchema = {
     .enum(['workerThreads', 'childProcesses'])
     .optional(),
   turbopackMinify: z.boolean().optional(),
+  turbopackRemoteModulesManifests: z.boolean().optional(),
   turbopackFileSystemCacheForDev: z.boolean().optional(),
   turbopackFileSystemCacheForBuild: z.boolean().optional(),
   turbopackSourceMaps: z.boolean().optional(),

@@ -767,6 +767,12 @@ export interface ExperimentalConfig {
   turbopackMinify?: boolean
 
   /**
+   * Emit the public Remote Components manifests (`turbopack.remote-modules`,
+   * `turbopack.module-ids`) during a Turbopack build.
+   */
+  turbopackRemoteModulesManifests?: boolean
+
+  /**
    * Enable support for `with {type: "bytes"}` for ESM imports.
    */
   turbopackImportTypeBytes?: boolean
