@@ -1,11 +1,12 @@
 import { Suspense } from 'react'
 import { cacheLife } from 'next/cache'
+import { getDate } from '../logic'
 
 // The id prop is just used to assert on the logged cache key in tests.
 async function DynamicCache({ id }: { id: string }) {
-  'use cache'
+  'use cache: remote'
   cacheLife('seconds')
-  return <p id="data">{new Date().toISOString()}</p>
+  return <p id="data">{getDate()}</p>
 }
 
 export default function Page() {

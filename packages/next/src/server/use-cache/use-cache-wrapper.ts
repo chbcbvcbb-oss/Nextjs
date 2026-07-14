@@ -140,9 +140,13 @@ interface PublicCacheContext {
 
 type CacheContext = PrivateCacheContext | PublicCacheContext
 
-export type CacheKeyParts =
-  | [buildId: string, id: string, args: unknown[]]
-  | [buildId: string, id: string, args: unknown[], hmrRefreshHash: string]
+const nextVersion = process.env.__NEXT_VERSION as string
+
+export type CacheKeyParts = [
+  id: string,
+  args: unknown[],
+  implementationHash: unknown,
+]
 
 interface UseCachePageInnerProps {
   params: Promise<Params>
@@ -1175,7 +1179,7 @@ async function generateCacheEntryImpl(
   const temporaryReferences = createServerTemporaryReferenceSet()
   const outerWorkUnitStore = cacheContext.outerWorkUnitStore
 
-  const [, , args] =
+  const [, args] =
     typeof encodedArguments === 'string'
       ? await decodeReply<CacheKeyParts>(
           encodedArguments,
@@ -1833,19 +1837,6 @@ export async function cache(
   // In case getClientReferenceManifestSingleton is implemented using AsyncLocalStorage.
   const clientReferenceManifest = getClientReferenceManifest()
 
-  // Because the Action ID is not yet unique per implementation of that Action we can't
-  // safely reuse the results across builds yet. In the meantime we add the buildId to the
-  // arguments as a seed to ensure they're not reused. Remove this once Action IDs hash
-  // the implementation.
-  const buildId = workStore.deploymentId || workStore.buildId
-
-  // In dev mode, when the HMR refresh hash is set, we include it in the
-  // cache key. This ensures that cache entries are not reused when server
-  // components have been edited. This is a very coarse approach. But it's
-  // also only a temporary solution until Action IDs are unique per
-  // implementation. Remove this once Action IDs hash the implementation.
-  const hmrRefreshHash = getHmrRefreshHash(workUnitStore)
-
   const hangingInputAbortSignal = createHangingInputAbortSignal(workUnitStore)
 
   if (cacheContext.kind === 'private') {
@@ -2008,9 +1999,11 @@ export async function cache(
   // long as the request. In development private caches are persisted across
   // requests, so `cacheHandlerKeyBase` (below) additionally scopes the handler
   // key by the request's cookies and headers.
-  const cacheKeyParts: CacheKeyParts = hmrRefreshHash
-    ? [buildId, id, args, hmrRefreshHash]
-    : [buildId, id, args]
+  const cacheKeyParts: CacheKeyParts = [
+    id,
+    args,
+    await computeCacheKeyImplementationPart(workStore, workUnitStore, id),
+  ]
 
   const encodeCacheKeyParts = () =>
     encodeReply(cacheKeyParts, {
@@ -3264,6 +3257,77 @@ export async function cache(
     replayConsoleLogs,
     environmentName: 'Cache',
   })
+}
+
+const encoder = new TextEncoder()
+
+/**
+ * This returns a cache key that has to cover everything that can affect the result of the cached
+ * function (apart from the arguments). So
+ * - codeHash: the code itself that generates the return value
+ * - runtimeEnvVars: the keys and values runtime environment variables that the code reads (and are
+ *   not inlined)
+ * - the version of Next.js (to account for RSC write format changes, or use-cache-wrapper.ts
+ *   changes, etc...)
+ *
+ * In case that granular information isn't available, fall back to
+ * buildId/deploymentId/hmrRefreshHash, which is a correct hash but over-invalidates way too often.
+ */
+async function computeCacheKeyImplementationPart(
+  workStore: WorkStore,
+  workUnitStore: WorkUnitStore,
+  id: string
+): Promise<unknown> {
+  async function hashString(input: string): Promise<string> {
+    if (process.env.NEXT_RUNTIME === 'edge') {
+      function bufferToHex(buffer: ArrayBuffer): string {
+        return Array.prototype.map
+          .call(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, '0'))
+          .join('')
+      }
+      const buffer = encoder.encode(input)
+      return bufferToHex(await crypto.subtle.digest('SHA-256', buffer))
+    } else {
+      const crypto = require('crypto') as typeof import('crypto')
+      return crypto.createHash('sha256').update(input).digest('hex')
+    }
+  }
+
+  const serverModuleMapEntry = getServerModuleMap()?.[id]
+  if (
+    typeof serverModuleMapEntry?.codeHash === 'string' &&
+    // if runtimeEnvVars===true, then always invalidate
+    Array.isArray(serverModuleMapEntry?.runtimeEnvVars)
+  ) {
+    let runtimeEnvVarsWithValues: string[] = await Promise.all(
+      serverModuleMapEntry?.runtimeEnvVars?.map(async (v) => {
+        // Hash the env var values, to not leak secrets into the cache key.
+        let hash = process.env[v] ? await hashString(process.env[v]) : undefined
+        return `${v}=${hash}`
+      }) ?? []
+    )
+
+    // When more accurate analysis information is available, use codeHash + runtimeEnvVars
+    return [serverModuleMapEntry?.codeHash, nextVersion].concat(
+      runtimeEnvVarsWithValues
+    )
+  } else {
+    // Because the Action ID is not yet unique per implementation of that Action we can't
+    // safely reuse the results across builds yet. In the meantime we add the buildId to the
+    // arguments as a seed to ensure they're not reused. Remove this once Action IDs hash
+    // the implementation.
+    const buildId = workStore.deploymentId || workStore.buildId
+
+    // In dev mode, when the HMR refresh hash is set, we include it in the
+    // cache key. This ensures that cache entries are not reused when server
+    // components have been edited. This is a very coarse approach. But it's
+    // also only a temporary solution until Action IDs are unique per
+    // implementation. Remove this once Action IDs hash the implementation.
+    const hmrRefreshHash = getHmrRefreshHash(workUnitStore)
+
+    // otherwise fall back to buildId and/or the HMR hash.
+    return hmrRefreshHash ? [buildId, hmrRefreshHash] : [buildId]
+  }
 }
 
 /**
