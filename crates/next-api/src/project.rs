@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -577,6 +577,20 @@ fn define_env_diff_report(old: &DefineEnv, new: &DefineEnv) -> String {
     report
 }
 
+/// Canonicalizes the project root path, resolving symlinks and expanding Windows 8.3 short names
+/// (e.g. `RUNNER~1`). [`DiskFileSystem::new`] requires a canonicalized root.
+///
+/// Falls back to the given path if it cannot be canonicalized.
+fn canonicalize_root_path(root_path: RcStr) -> RcStr {
+    match dunce::canonicalize(Path::new(&*root_path)) {
+        Ok(canonical) => match canonical.into_os_string().into_string() {
+            Ok(canonical) => canonical.into(),
+            Err(_) => root_path,
+        },
+        Err(_) => root_path,
+    }
+}
+
 impl ProjectContainer {
     /// Set up filesystems, watchers, and construct the [`Project`] instance inside the container.
     ///
@@ -585,7 +599,8 @@ impl ProjectContainer {
     ///
     /// This is an associated function instead of a method because we don't currently implement
     /// [`std::ops::Receiver`] on [`OperationVc`].
-    pub async fn initialize(this_op: OperationVc<Self>, options: ProjectOptions) -> Result<()> {
+    pub async fn initialize(this_op: OperationVc<Self>, mut options: ProjectOptions) -> Result<()> {
+        options.root_path = canonicalize_root_path(options.root_path);
         let this = this_op.read_strongly_consistent().await?;
         let span = tracing::info_span!(
             "initialize project",
@@ -694,7 +709,7 @@ impl ProjectContainer {
                 .context("ProjectContainer need to be initialized with initialize()")?;
 
             if let Some(root_path) = root_path {
-                new_options.root_path = root_path;
+                new_options.root_path = canonicalize_root_path(root_path);
             }
             if let Some(project_path) = project_path {
                 new_options.project_path = project_path;

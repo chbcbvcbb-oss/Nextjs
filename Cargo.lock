@@ -4907,6 +4907,7 @@ dependencies = [
  "async-trait",
  "bincode 2.0.1",
  "byteorder",
+ "dunce",
  "either",
  "futures",
  "indexmap 2.13.0",
