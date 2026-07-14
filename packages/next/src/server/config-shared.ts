@@ -485,6 +485,7 @@ export interface ExperimentalConfig {
    * regardless of this flag.
    */
   coldCacheBadge?: boolean
+  webSocketRouteHandlers?: boolean
   useSkewCookie?: boolean
   /** @deprecated use top-level `cacheHandlers` instead */
   cacheHandlers?: NextConfig['cacheHandlers']
@@ -2097,6 +2098,7 @@ export const defaultConfig = Object.freeze({
   experimental: {
     appNewScrollHandler: true,
     coldCacheBadge: false,
+    webSocketRouteHandlers: false,
     useSkewCookie: false,
     cssChunking: true,
     multiZoneDraftMode: false,
@@ -2311,6 +2313,7 @@ export interface NextConfigRuntime {
     | 'supportsImmutableAssets'
     | 'instantInsights'
     | 'requestInsights'
+    | 'webSocketRouteHandlers'
   > & {
     // Pick on @internal fields generates invalid .d.ts files
     /** @internal */
@@ -2382,6 +2385,7 @@ export function getNextConfigRuntime(
     supportsImmutableAssets: ex.supportsImmutableAssets,
     instantInsights: ex.instantInsights,
     requestInsights: ex.requestInsights,
+    webSocketRouteHandlers: ex.webSocketRouteHandlers,
 
     trustHostHeader: ex.trustHostHeader,
     isExperimentalCompile: ex.isExperimentalCompile,

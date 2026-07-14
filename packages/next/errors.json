@@ -1418,5 +1418,17 @@
   "1417": "Could not parse output from TypeScript's --showConfig.",
   "1418": "TypeScript %s does not provide the compiler API required by Next.js. Enable %s in your Next.js config to use the TypeScript CLI, or install TypeScript 6 instead.",
   "1419": "TypeScript CLI interrupted by %s",
-  "1420": "shouldTrackSyncInterrupt allowed a sync IO interrupt in an unexpected stage: %s"
+  "1420": "shouldTrackSyncInterrupt allowed a sync IO interrupt in an unexpected stage: %s",
+  "1421": "NextResponse.upgrade() requires experimental.webSocketRouteHandlers to be enabled in next.config.js.",
+  "1422": "NextResponse.upgrade() is only supported in App Route Handlers and cannot be returned from proxy.ts.",
+  "1423": "NextResponse.upgrade() requires a hooks object.",
+  "1424": "NextResponse.upgrade() is not supported in the Edge Runtime.",
+  "1425": "NextResponse.upgrade() cannot set the protocol-critical \"%s\" header.",
+  "1426": "NextResponse.upgrade() hook \"%s\" must be a function.",
+  "1427": "WebSocket upgrade client disconnected.",
+  "1428": "Invalid %s in WebSocket upgrade response.",
+  "1429": "Route %s couldn't be rendered statically because it returned NextResponse.upgrade().",
+  "1430": "Invariant: CrossWS upgrade request is missing its App Route response.",
+  "1431": "WebSocket Route Handlers are unavailable because experimental.webSocketRouteHandlers is not enabled.",
+  "1432": "NextResponse.upgrade() does not support the \"%s\" hook."
 }
