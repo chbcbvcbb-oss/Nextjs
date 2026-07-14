@@ -1420,5 +1420,7 @@
   "1419": "TypeScript CLI interrupted by %s",
   "1420": "shouldTrackSyncInterrupt allowed a sync IO interrupt in an unexpected stage: %s",
   "1421": "Invariant: no direct app page entry found for %s",
-  "1422": "Invariant: dev virtual filesystem item was not handled by the development bundler"
+  "1422": "Invariant: dev virtual filesystem item was not handled by the development bundler",
+  "1423": "Invariant: dev server state can only be updated in dev",
+  "1424": "Invariant: no app initialized"
 }
