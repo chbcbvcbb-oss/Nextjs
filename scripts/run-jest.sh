@@ -59,14 +59,6 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# appNewScrollHandler defaults to `true`. Non-experimental runs opt out so
-# local runs mirror the non-experimental CI shards and keep coverage of the old
-# scroll handler; experimental runs leave it on via the default. An explicit
-# value in the environment is respected either way.
-if [ "$experimental" != true ]; then
-  export __NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER="${__NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER:-false}"
-fi
-
 # Resolves to `node_modules/.bin/jest` via `$PATH`. This relies on being
 # invoked through pnpm (or another package runner), which prepends the
 # workspace's `node_modules/.bin/` to `$PATH` before running the script.
