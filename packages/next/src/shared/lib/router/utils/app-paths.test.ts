@@ -1,4 +1,56 @@
-import { normalizeRscURL } from './app-paths'
+import {
+  compareAppPaths,
+  normalizeRscURL,
+  selectAppPageEntry,
+} from './app-paths'
+
+describe('selectAppPageEntry', () => {
+  it('prefers the direct children page over an expanded catch-all slot', () => {
+    const appPaths = ['/@slot/[...catchAll]/page', '/foo/page'].sort(
+      compareAppPaths
+    )
+
+    expect(selectAppPageEntry('/foo', appPaths)).toBe('/foo/page')
+  })
+
+  it('prefers the direct children page over a direct parallel slot', () => {
+    const appPaths = ['/[...catchAll]/page', '/@slot/[...catchAll]/page'].sort(
+      compareAppPaths
+    )
+
+    expect(selectAppPageEntry('/[...catchAll]', appPaths)).toBe(
+      '/[...catchAll]/page'
+    )
+  })
+
+  it('selects the final direct entry from canonical build order', () => {
+    const appPaths = ['/foo/page', '/@alpha/foo/page', '/@beta/foo/page']
+
+    expect(selectAppPageEntry('/foo', appPaths)).toBe('/@beta/foo/page')
+  })
+
+  it('matches escaped underscore entries to decoded pathnames', () => {
+    expect(selectAppPageEntry('/_shop', ['/%5Fshop/page'])).toBe(
+      '/%5Fshop/page'
+    )
+  })
+
+  it('rejects a route with no direct app path', () => {
+    const appPaths = ['/[...catchAll]/page', '/@slot/[...catchAll]/page']
+
+    expect(() => selectAppPageEntry('/unrelated', appPaths)).toThrow(
+      'Invariant: no direct app page entry found for /unrelated'
+    )
+  })
+})
+
+describe('compareAppPaths', () => {
+  it('sorts parallel slots before the children page', () => {
+    expect(
+      ['/[...catchAll]/page', '/@slot/[...catchAll]/page'].sort(compareAppPaths)
+    ).toEqual(['/@slot/[...catchAll]/page', '/[...catchAll]/page'])
+  })
+})
 
 describe('normalizeRscPath', () => {
   it('should normalize url with .rsc', () => {
