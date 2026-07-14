@@ -64,24 +64,51 @@ import { isAppPageRouteDefinition } from '../../route-definitions/app-page-route
 import { selectAppPageEntry } from '../../../shared/lib/router/utils/app-paths'
 import { normalizeCatchAllRoutes } from './normalize-catchall-routes'
 
-export type FsOutput = {
+type BaseRouteFsOutput = {
+  itemPath: string
+  locale?: string
+  route: RouteDefinition
+  params?: Params
+  error?: Error
+}
+
+type AppFileFsOutput = BaseRouteFsOutput & {
+  type: 'appFile'
+}
+
+type PageFileFsOutput = BaseRouteFsOutput & {
+  type: 'pageFile'
+}
+
+type StaticFsOutput = {
   type:
-    | 'appFile'
-    | 'pageFile'
-    | 'nextImage'
     | 'publicFolder'
     | 'nextStaticFolder'
     | 'legacyStaticFolder'
-    | 'devVirtualFsItem'
-
   itemPath: string
-  fsPath?: string
-  itemsRoot?: string
-  locale?: string
-  route?: RouteDefinition
-  params?: Params
+  fsPath: string
+  itemsRoot: string
+}
+
+type NextImageFsOutput = {
+  type: 'nextImage'
+  itemPath: string
+}
+
+type DevVirtualFsOutput = {
+  type: 'devVirtualFsItem'
+  itemPath: string
+}
+
+export type FsOutput =
+  | AppFileFsOutput
+  | PageFileFsOutput
+  | StaticFsOutput
+  | NextImageFsOutput
+  | DevVirtualFsOutput
+
+type FsOutputEnsure = (AppFileFsOutput | PageFileFsOutput) & {
   requestPath?: string
-  error?: Error
 }
 
 type FilesystemRouteDefinition = RouteDefinition & {
@@ -181,7 +208,7 @@ export async function setupFsCheck(opts: {
           return 1
         }
         return (
-          (value.fsPath || '').length +
+          ('fsPath' in value ? value.fsPath.length : 0) +
           value.itemPath.length +
           value.type.length
         )
@@ -612,7 +639,7 @@ export async function setupFsCheck(opts: {
   debug('pageFiles', pageFiles)
   debug('appFiles', appFiles)
 
-  let ensureFn: (item: FsOutput) => Promise<void> | undefined
+  let ensureFn: (item: FsOutputEnsure) => Promise<void> | undefined
 
   const normalizers = {
     // Because we can't know if the app directory is enabled or not at this
@@ -720,12 +747,15 @@ export async function setupFsCheck(opts: {
             // "nextStaticFolder" sets Cache-Control "no-store" on dev.
             type: 'nextStaticFolder',
             fsPath,
-            itemPath: fsPath,
+            itemPath: path.basename(fsPath),
+            itemsRoot: path.dirname(fsPath),
           }
         }
       }
 
-      const itemsToCheck: Array<[Set<string>, FsOutput['type']]> = [
+      const itemsToCheck: Array<
+        [Set<string>, Exclude<FsOutput['type'], 'nextImage'>]
+      > = [
         [this.devVirtualFsItems, 'devVirtualFsItem'],
         [nextStaticFolderItems, 'nextStaticFolder'],
         [legacyStaticFolderItems, 'legacyStaticFolder'],
@@ -858,7 +888,6 @@ export async function setupFsCheck(opts: {
             }
             case 'appFile':
             case 'pageFile':
-            case 'nextImage':
             case 'devVirtualFsItem': {
               break
             }
@@ -906,11 +935,7 @@ export async function setupFsCheck(opts: {
 
           let error: Error | undefined
 
-          if (opts.dev && isPageOrAppFile) {
-            if (!route) {
-              continue
-            }
-
+          if (opts.dev && isPageOrAppFile && route) {
             const isAppFile = type === 'appFile'
 
             // Attempt to ensure the page/app file is compiled and ready.
@@ -943,40 +968,58 @@ export async function setupFsCheck(opts: {
             continue
           }
 
-          if (isPageOrAppFile && !route && !matchedItem) {
-            continue
-          }
+          let itemResult: FsOutput
 
-          let params: Params | undefined
-          if (route && isAppPageRouteDefinition(route)) {
-            // Parallel app routes can contribute multiple dynamic app paths
-            // to one pathname. Preserve the params from the matching path.
-            for (const appPath of route.appPaths) {
-              const routePathname = appNormalizers.pathname.normalize(appPath)
-              if (!isDynamicRoute(routePathname)) {
-                continue
-              }
+          if (isPageOrAppFile) {
+            if (!route) {
+              continue
+            }
 
-              const routeParams = getRouteMatcher(getRouteRegex(routePathname))(
-                curItemPath
-              )
+            let params: Params | undefined
+            if (isAppPageRouteDefinition(route)) {
+              // Parallel app routes can contribute multiple dynamic app paths
+              // to one pathname. Preserve the params from the matching path.
+              for (const appPath of route.appPaths) {
+                const routePathname = appNormalizers.pathname.normalize(appPath)
+                if (!isDynamicRoute(routePathname)) {
+                  continue
+                }
 
-              if (routeParams) {
-                params = routeParams
-                break
+                const routeParams = getRouteMatcher(
+                  getRouteRegex(routePathname)
+                )(curItemPath)
+
+                if (routeParams) {
+                  params = routeParams
+                  break
+                }
               }
             }
-          }
 
-          const itemResult = {
-            type,
-            fsPath,
-            locale,
-            itemsRoot,
-            itemPath: curItemPath,
-            route,
-            params,
-            error,
+            itemResult = {
+              type,
+              locale,
+              itemPath: curItemPath,
+              route,
+              params,
+              error,
+            }
+          } else if (type === 'devVirtualFsItem') {
+            itemResult = {
+              type,
+              itemPath: curItemPath,
+            }
+          } else {
+            if (!fsPath || !itemsRoot) {
+              continue
+            }
+
+            itemResult = {
+              type,
+              fsPath,
+              itemsRoot,
+              itemPath: curItemPath,
+            }
           }
 
           getItemsLru?.set(itemKey, itemResult)
