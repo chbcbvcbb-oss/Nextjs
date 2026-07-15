@@ -1,6 +1,7 @@
 use rustc_hash::FxHashMap;
 use swc_core::{
     atoms::Atom,
+    common::Span,
     ecma::{ast::*, visit::VisitWithAstPath},
 };
 
@@ -31,8 +32,11 @@ pub struct VarGraph<'a> {
     pub free_var_ids: FxHashMap<Atom, Id>,
 
     pub effects: Vec<Effect<'a>>,
+
     // Some unconditional codegens, usually for ESM items.
     pub code_gens: Vec<CodeGen>,
+
+    pub dynamic_process_env_access: Option<Span>,
 }
 
 impl<'a> VarGraph<'a> {
@@ -61,6 +65,7 @@ pub fn create_graph<'a>(
             free_var_ids: Default::default(),
             effects: Default::default(),
             code_gens: Default::default(),
+            dynamic_process_env_access: None,
         },
         eval_context,
         state: Default::default(),

@@ -1,7 +1,9 @@
 use std::{borrow::Cow, collections::BTreeMap, io::Write, sync::LazyLock};
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use bincode::{Decode, Encode};
+use either::Either;
 use next_core::{
     next_client_reference::{CssClientReferenceModule, EcmascriptClientReferenceModule},
     next_manifests::{
@@ -36,6 +38,7 @@ use turbopack_core::{
     context::AssetContext,
     file_source::FileSource,
     ident::AssetIdent,
+    issue::{Issue, IssueExt, IssueSeverity, IssueSource, IssueStage, StyledString},
     module::Module,
     module_graph::{
         GraphTraversalAction, ModuleGraph, ModuleGraphLayer, async_module_info::AsyncModulesInfo,
@@ -46,7 +49,7 @@ use turbopack_core::{
     virtual_source::VirtualSource,
 };
 use turbopack_ecmascript::{
-    EcmascriptParsable,
+    EcmascriptAnalyzable, EcmascriptParsable, EnvVarReferences,
     chunk::{EcmascriptChunkItem, EcmascriptChunkItemExt, EcmascriptChunkPlaceable},
     parse::ParseResult,
     tree_shake::part::module::EcmascriptModulePartAsset,
@@ -250,7 +253,7 @@ impl Asset for ServerActionManifestAsset {
         struct ActionMetadata<'a> {
             exported_name: &'a str,
             filename: Cow<'a, str>,
-            code_hash: Option<ReadRef<RcStr>>,
+            data: Option<ReadRef<ModulesInformation>>,
         }
 
         let action_metadata: Vec<(&str, ActionMetadata<'_>)> = actions_value
@@ -265,26 +268,28 @@ impl Asset for ServerActionManifestAsset {
                     Cow::Owned(module.ident().await?.path.to_string())
                 };
 
+                let data = if durable_use_cache_entries
+                    && extract_type_from_server_reference_id(hash_id)
+                        == ServerReferenceType::UseCache
+                {
+                    Some(
+                        compute_subtree_content_hash(
+                            *self.module_graph,
+                            **module,
+                            *self.chunking_context,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+
                 Ok((
                     &**hash_id,
                     ActionMetadata {
                         exported_name: &meta.name,
                         filename,
-                        code_hash: if durable_use_cache_entries
-                            && extract_type_from_server_reference_id(hash_id)
-                                == ServerReferenceType::UseCache
-                        {
-                            Some(
-                                compute_subtree_content_hash(
-                                    *self.module_graph,
-                                    **module,
-                                    *self.chunking_context,
-                                )
-                                .await?,
-                            )
-                        } else {
-                            None
-                        },
+                        data,
                     },
                 ))
             })
@@ -297,7 +302,7 @@ impl Asset for ServerActionManifestAsset {
             ActionMetadata {
                 exported_name,
                 filename,
-                code_hash,
+                data,
             },
         ) in &action_metadata
         {
@@ -309,7 +314,14 @@ impl Asset for ServerActionManifestAsset {
                     is_async: async_module_info
                         .is_async(self.chunk_item.module().to_resolved().await?)
                         .await?,
-                    code_hash: code_hash.as_ref().map(|h| h.as_str()),
+                    code_hash: data.as_ref().map(|d| d.ident_code_hash.as_str()),
+                    runtime_env_vars: data.as_ref().map(|d| {
+                        if d.runtime_env_var_references_all {
+                            Either::Left(true)
+                        } else {
+                            Either::Right(d.runtime_env_var_references.as_slice())
+                        }
+                    }),
                 },
             );
 
@@ -356,12 +368,20 @@ pub async fn to_rsc_context(
     Ok(module)
 }
 
+#[turbo_tasks::value]
+#[derive(Debug)]
+struct ModulesInformation {
+    pub ident_code_hash: RcStr,
+    pub runtime_env_var_references: Vec<RcStr>,
+    pub runtime_env_var_references_all: bool,
+}
+
 #[turbo_tasks::function]
 async fn compute_subtree_content_hash(
     module_graph: ResolvedVc<ModuleGraph>,
     entry: ResolvedVc<Box<dyn Module>>,
     chunking_context: Vc<Box<dyn ChunkingContext>>,
-) -> Result<Vc<RcStr>> {
+) -> Result<Vc<ModulesInformation>> {
     let span = tracing::info_span!(
         "compute use-cache code hash",
         entry = display(entry.ident_string().await?)
@@ -405,27 +425,116 @@ async fn compute_subtree_content_hash(
                 entry.ident().await?.path,
                 modules
                     .iter()
-                    .map(async |m| Ok(format!(
-                        "  '{}': {}",
-                        m.ident_string().await?,
-                        module_hash(*module_graph, chunking_context, async_module_info, **m)
-                            .await?
-                    )))
+                    .map(async |m| {
+                        let data =
+                            module_hash(*module_graph, chunking_context, async_module_info, **m)
+                                .await?;
+                        Ok(format!(
+                            "  '{}': {}",
+                            m.ident_string().await?,
+                            data.ident_code_hash
+                        ))
+                    })
                     .try_join()
                     .await?
                     .join("\n")
             );
         }
 
-        let hashes = modules
+        let data = modules
             .into_iter()
-            .map(|m| module_hash(*module_graph, chunking_context, async_module_info, *m))
+            .map(async |m| {
+                Ok((
+                    m,
+                    module_hash(*module_graph, chunking_context, async_module_info, *m).await?,
+                ))
+            })
             .try_join()
             .await?;
 
-        anyhow::Ok(Vc::cell(
-            deterministic_hash("", hashes, HashAlgorithm::Xxh3Hash128Hex).into(),
-        ))
+        let mut hashes = Vec::with_capacity(data.len());
+        let mut runtime_env_vars = FxIndexSet::default();
+        let mut runtime_env_vars_all = false;
+
+        #[turbo_tasks::value]
+        pub struct ActionIssue {
+            pub ident: ResolvedVc<AssetIdent>,
+            pub title: ResolvedVc<StyledString>,
+            pub source: Option<IssueSource>,
+        }
+        #[turbo_tasks::value_impl]
+        impl ActionIssue {
+            #[turbo_tasks::function]
+            pub fn new(
+                ident: ResolvedVc<AssetIdent>,
+                title: RcStr,
+                source: Option<IssueSource>,
+            ) -> Vc<Self> {
+                ActionIssue {
+                    ident,
+                    title: StyledString::Text(title).resolved_cell(),
+                    source,
+                }
+                .cell()
+            }
+        }
+
+        #[async_trait]
+        #[turbo_tasks::value_impl]
+        impl Issue for ActionIssue {
+            fn severity(&self) -> IssueSeverity {
+                IssueSeverity::Warning
+            }
+            fn stage(&self) -> IssueStage {
+                IssueStage::ProcessModule
+            }
+
+            async fn file_path(&self) -> Result<FileSystemPath> {
+                Ok(self.ident.await?.path.clone())
+            }
+
+            async fn title(&self) -> Result<StyledString> {
+                Ok((*self.title.await?).clone())
+            }
+
+            fn source(&self) -> Option<IssueSource> {
+                self.source
+            }
+        }
+
+        for (m, data) in &data {
+            hashes.push(&data.ident_code_hash);
+            if let Some(env) = &data.env_var_references {
+                runtime_env_vars.extend(env.runtime.iter());
+                if let Some(issue_source) = &env.runtime_all {
+                    runtime_env_vars_all = true;
+
+                    ActionIssue::new(
+                        m.ident(),
+                        format!(
+                            "Dynamic process.env access from {}",
+                            entry.ident_string().await?
+                        )
+                        .into(),
+                        Some(*issue_source),
+                    )
+                    .to_resolved()
+                    .await?
+                    .emit();
+                }
+            }
+        }
+
+        let hash = deterministic_hash("", hashes, HashAlgorithm::Xxh3Hash128Hex).into();
+
+        anyhow::Ok(
+            ModulesInformation {
+                ident_code_hash: hash,
+                runtime_env_var_references: runtime_env_vars.into_iter().cloned().collect(),
+                runtime_env_var_references_all: runtime_env_vars_all,
+            }
+            .cell(),
+        )
     }
     .instrument(span)
     .await
@@ -442,18 +551,33 @@ async fn compute_subtree_content_hash(
     }
 }
 
+#[turbo_tasks::value]
+#[derive(Debug)]
+struct ModuleInformation {
+    pub ident_code_hash: RcStr,
+    pub env_var_references: Option<ReadRef<EnvVarReferences>>,
+}
+
 #[turbo_tasks::function]
 async fn module_hash(
     module_graph: ResolvedVc<ModuleGraph>,
     chunking_context: ResolvedVc<Box<dyn ChunkingContext>>,
     async_module_info: ResolvedVc<AsyncModulesInfo>,
     m: ResolvedVc<Box<dyn Module>>,
-) -> Result<Vc<RcStr>> {
+) -> Result<Vc<ModuleInformation>> {
     let ident = m.ident();
     let ident_value = ident.await?;
     let ident_str = ident.to_string().await?;
 
-    if let Some(placeable_module) = ResolvedVc::try_downcast::<Box<dyn EcmascriptChunkPlaceable>>(m)
+    let env_var_references =
+        if let Some(module) = ResolvedVc::try_downcast::<Box<dyn EcmascriptAnalyzable>>(m) {
+            Some(module.env_var_references().await?)
+        } else {
+            None
+        };
+
+    let ident_code_hash = if let Some(placeable_module) =
+        ResolvedVc::try_downcast::<Box<dyn EcmascriptChunkPlaceable>>(m)
         && !ident_value
             .layer
             .as_ref()
@@ -472,11 +596,11 @@ async fn module_hash(
             None
         };
         let code = chunk_item.code(async_info);
-        Ok(Vc::cell(RcStr::from(deterministic_hash(
+        RcStr::from(deterministic_hash(
             "",
             (ident_str, code.source_code_hash().await?),
             HashAlgorithm::Xxh3Hash128Hex,
-        ))))
+        ))
     } else {
         // A non-JS static file or an external module
         let content_hash = m
@@ -486,12 +610,18 @@ async fn module_hash(
             .content()
             .hash(HashAlgorithm::Xxh3Hash128Hex)
             .await?;
-        Ok(Vc::cell(RcStr::from(deterministic_hash(
+        RcStr::from(deterministic_hash(
             "",
             (ident_str, content_hash),
             HashAlgorithm::Xxh3Hash128Hex,
-        ))))
+        ))
+    };
+
+    Ok(ModuleInformation {
+        ident_code_hash,
+        env_var_references,
     }
+    .cell())
 }
 
 /// Server action info for JSON parsing
