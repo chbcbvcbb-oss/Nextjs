@@ -5,6 +5,7 @@ use std::env::current_dir;
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
+use turbo_rcstr::rcstr;
 use turbo_tasks::TurboTasks;
 use turbo_tasks_backend::{BackendOptions, TurboTasksBackend, noop_backing_storage};
 use turbo_tasks_malloc::TurboMalloc;
@@ -89,18 +90,22 @@ async fn main_inner(args: Arguments) -> Result<()> {
         noop_backing_storage(),
     ));
 
-    tt.run_once(async move {
-        node_file_trace(
+    let result = tt
+        .run_once(node_file_trace(
             current_dir()?.to_str().unwrap().into(),
-            args.entry.into(),
+            rcstr!("."),
+            rcstr!("."),
+            vec![args.entry.into()],
             args.graph,
             args.show_issues,
             args.depth,
-        )
+        ))
         .await?;
-        Ok(())
-    })
-    .await?;
+
+    println!("FILELIST:");
+    for a in result.files {
+        println!("{a}");
+    }
 
     // Intentionally leak this `Arc`. Otherwise we'll waste time during process exit performing a
     // ton of drop calls.

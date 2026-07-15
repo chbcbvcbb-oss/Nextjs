@@ -2053,6 +2053,12 @@ importers:
 
   turbopack/packages/node-module-trace: {}
 
+  turbopack/packages/tracing-napi:
+    devDependencies:
+      '@napi-rs/cli':
+        specifier: 2.18.4
+        version: 2.18.4
+
   turbopack/packages/turbo-tracing-next-plugin:
     dependencies:
       '@vercel/webpack-nft':
