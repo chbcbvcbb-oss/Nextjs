@@ -12,13 +12,11 @@ import type {
   CompilationError,
   HmrMessageSentToBrowser,
   NextJsHotReloaderInterface,
-  ReloadPageMessage,
   SyncMessage,
   TurbopackConnectedMessage,
 } from './hot-reloader-types'
 import { HMR_MESSAGE_SENT_TO_BROWSER } from './hot-reloader-types'
 import type {
-  Update as TurbopackUpdate,
   Endpoint,
   WrittenEndpoint,
   TurbopackResult,
@@ -27,7 +25,7 @@ import type {
   NodeJsHmrUpdate,
   NodeJsPartialHmrUpdate,
 } from '../../build/swc/types'
-import { createDefineEnv, getBindingsSync, HmrTarget } from '../../build/swc'
+import { createDefineEnv, getBindingsSync } from '../../build/swc'
 import * as Log from '../../build/output/log'
 import { BLOCKED_PAGES } from '../../shared/lib/constants'
 import {
@@ -52,7 +50,6 @@ import {
   handleEntrypoints,
   handlePagesErrorRoute,
   handleRouteType,
-  hasEntrypointForKey,
   msToNs,
   type ReadyIds,
   type SendHmr,
@@ -163,7 +160,7 @@ declare const __turbopack_server_hmr_apply__:
 
 declare global {
   /**
-   * Sync with  `turbopack/crates/turbopack-ecmascript-runtime/js/src/nodejs/runtime/nodejs-globals.d.ts`.
+   * Sync with `turbopack/crates/turbopack-ecmascript-runtime/js/src/nodejs/runtime/nodejs-globals.d.ts`.
    */
   var __turbopack_server_hmr_handlers__: Map<string, unknown> | undefined
 }
@@ -206,7 +203,7 @@ function setupServerHmr(
   }
 ) {
   async function runSubscription() {
-    const subscription = project.allHmrEvents(HmrTarget.Server)
+    const subscription = project.serverHmrEvents()
 
     // Skip initial state
     await subscription.next()
@@ -503,6 +500,15 @@ export async function createHotReloaderTurbopack(
   // Dev specific
   const changeSubscriptions: ChangeSubscriptions = new Map()
   const serverPathState = new Map<string, string>()
+  // The set of server paths written for each edge entry on its previous
+  // `writeToDisk()`. Edge module contexts are cached under a stable module
+  // name and are only evicted by `clearModuleContext(path)` when the path
+  // matches a chunk the live context already loaded. When an edit renames
+  // every one of an edge entry's content-hashed chunks, none of the new paths
+  // match the stale context, so it would never be evicted. Remembering the
+  // previous paths lets us evict via the paths that are being *removed*, which
+  // are exactly the ones the stale context loaded.
+  const edgeServerPaths = new Map<EntryKey, string[]>()
   const readyIds: ReadyIds = new Set()
   let currentEntriesHandlingResolve: ((value?: unknown) => void) | undefined
   let currentEntriesHandling = new Promise(
@@ -636,7 +642,33 @@ export async function createHotReloaderTurbopack(
       }
 
       if (!hasChange) {
-        return false
+        // For non-edge entries, no content change means there is nothing to do.
+        if (writtenEndpoint.type !== 'edge') {
+          return false
+        }
+
+        // Edge entries cache a sandbox module context under a stable module
+        // name, so it must be evicted when the entry's chunks are renamed. A
+        // rename is not observed as a content change above (a new chunk path
+        // simply has no prior hash to compare against), so detect it here as a
+        // chunk path that was loaded previously but is no longer emitted. Only
+        // then is eviction needed: fall through to the edge eviction below.
+        //
+        // When nothing was renamed, the live context is still valid and must be
+        // preserved — tearing it down on an unchanged rebuild would wipe
+        // in-memory module state that has to survive across requests (e.g. a
+        // streaming route handler holding the stream primed by a prior request).
+        const currentRelativePaths = new Set(
+          writtenEndpoint.serverPaths.map(({ path: p }) => p)
+        )
+        const previousRelativePaths = edgeServerPaths.get(key)
+        const hasRenamedChunk =
+          !!previousRelativePaths &&
+          previousRelativePaths.some((p) => !currentRelativePaths.has(p))
+        if (!hasRenamedChunk) {
+          edgeServerPaths.set(key, [...currentRelativePaths])
+          return false
+        }
       }
     }
 
@@ -658,6 +690,30 @@ export async function createHotReloaderTurbopack(
       serverFastRefresh &&
       entryType === 'app' &&
       writtenEndpoint.type !== 'edge'
+
+    // Evict the edge module context for chunks that this edge entry loaded
+    // previously but no longer emits. An edge context is cached under a stable
+    // module name and `clearModuleContext(path)` only evicts it when `path`
+    // matches a chunk the live context already loaded. When an edit renames
+    // every content-hashed chunk of the entry, none of the new `serverPaths`
+    // match the stale context, so without this it would keep serving the old
+    // module. The removed paths are exactly the ones the stale context loaded,
+    // so clearing them evicts it. Only relevant for edge entries; for Node.js
+    // entries the module is re-`require()`d from its new path anyway.
+    if (writtenEndpoint.type === 'edge') {
+      const currentRelativePaths = new Set(
+        writtenEndpoint.serverPaths.map(({ path: p }) => p)
+      )
+      const previousRelativePaths = edgeServerPaths.get(key)
+      if (previousRelativePaths) {
+        for (const previousPath of previousRelativePaths) {
+          if (!currentRelativePaths.has(previousPath)) {
+            clearModuleContext(join(distDir, previousPath))
+          }
+        }
+      }
+      edgeServerPaths.set(key, [...currentRelativePaths])
+    }
 
     const serverChunksPrefix = SERVER_HMR_CHUNKS_DIR + sep
     const filesToDelete: string[] = []
@@ -824,25 +880,6 @@ export async function createHotReloaderTurbopack(
     sendEnqueuedMessagesDebounce()
   }
 
-  function sendTurbopackMessage(payload: TurbopackUpdate) {
-    // TODO(PACK-2049): For some reason we end up emitting hundreds of issues messages on bigger apps,
-    //   a lot of which are duplicates.
-    //   They are currently not handled on the client at all, so might as well not send them for now.
-    payload.diagnostics = []
-    payload.issues = []
-    pendingBuilding.flush()
-
-    for (const client of [
-      ...clientsWithoutHtmlRequestId,
-      ...clientsByHtmlRequestId.values(),
-    ]) {
-      clientStates.get(client)?.turbopackUpdates.push(payload)
-    }
-
-    hmrEventHappened = true
-    sendEnqueuedMessagesDebounce()
-  }
-
   async function subscribeToClientChanges(
     key: EntryKey,
     includeIssues: boolean,
@@ -892,60 +929,6 @@ export async function createHotReloaderTurbopack(
       changeSubscriptions.delete(key)
     }
     currentEntryIssues.delete(key)
-  }
-
-  async function subscribeToClientHmrEvents(client: ws, id: string) {
-    const key = getEntryKey('assets', 'client', id)
-    if (!hasEntrypointForKey(currentEntrypoints, key, assetMapper)) {
-      // maybe throw an error / force the client to reload?
-      return
-    }
-
-    const state = clientStates.get(client)
-    if (!state || state.subscriptions.has(id)) {
-      return
-    }
-
-    const subscription = project!.hmrEvents(id, HmrTarget.Client)
-    state.subscriptions.set(id, subscription)
-
-    // The subscription will always emit once, which is the initial
-    // computation. This is not a change, so swallow it.
-    try {
-      await subscription.next()
-
-      for await (const data of subscription) {
-        processIssues(state.clientIssues, key, data, false, true)
-        if (data.type !== 'issues') {
-          sendTurbopackMessage(data as TurbopackUpdate)
-        }
-      }
-    } catch (e) {
-      // The client might be using an HMR session from a previous server, tell them
-      // to fully reload the page to resolve the issue. We can't use
-      // `hotReloader.send` since that would force every connected client to
-      // reload, only this client is out of date.
-      const reloadMessage: ReloadPageMessage = {
-        type: HMR_MESSAGE_SENT_TO_BROWSER.RELOAD_PAGE,
-        data: `error in HMR event subscription for ${id}: ${e}`,
-      }
-      sendToClient(client, reloadMessage)
-      client.close()
-      return
-    }
-  }
-
-  function unsubscribeFromClientHmrEvents(client: ws, id: string) {
-    const state = clientStates.get(client)
-    if (!state) {
-      return
-    }
-
-    const subscription = state.subscriptions.get(id)
-    subscription?.return!()
-
-    const key = getEntryKey('assets', 'client', id)
-    state.clientIssues.delete(key)
   }
 
   async function handleEntrypointsSubscription() {
@@ -1014,7 +997,6 @@ export async function createHotReloaderTurbopack(
             startBuilding,
             subscribeToChanges: subscribeToClientChanges,
             unsubscribeFromChanges: unsubscribeFromClientChanges,
-            unsubscribeFromHmrEvents: unsubscribeFromClientHmrEvents,
           },
         },
       })
@@ -1306,7 +1288,6 @@ export async function createHotReloaderTurbopack(
     onHMR(req, socket: Socket, head, onUpgrade) {
       wsServer.handleUpgrade(req, socket, head, (client) => {
         const clientIssues: EntryIssuesMap = new Map()
-        const subscriptions: Map<string, AsyncIterator<any>> = new Map()
 
         const htmlRequestId = req.url
           ? new URL(req.url, 'http://n').searchParams.get('id')
@@ -1352,14 +1333,9 @@ export async function createHotReloaderTurbopack(
           clientIssues,
           messages: new Map(),
           turbopackUpdates: [],
-          subscriptions,
         })
 
         client.on('close', () => {
-          // Remove active subscriptions
-          for (const subscription of subscriptions.values()) {
-            subscription.return?.()
-          }
           clientStates.delete(client)
 
           if (htmlRequestId) {
@@ -1471,14 +1447,13 @@ export async function createHotReloaderTurbopack(
               }
           }
 
-          // Turbopack messages
+          // Turbopack messages. The browser still emits `turbopack-subscribe`
+          // and `turbopack-unsubscribe` frames on chunk list registration;
+          // accepted as no-ops for protocol compat. Client HMR is now driven
+          // by a single firehose subscription (`project.clientHmrEvents`).
           switch (parsedData.type) {
             case 'turbopack-subscribe':
-              subscribeToClientHmrEvents(client, parsedData.path)
-              break
-
             case 'turbopack-unsubscribe':
-              unsubscribeFromClientHmrEvents(client, parsedData.path)
               break
 
             default:
@@ -2031,6 +2006,43 @@ export async function createHotReloaderTurbopack(
     })
   }
 
+  // Aggregate client HMR firehose. One subscription that diffs every client
+  // chunk list under `client_relative_path` in a single Rust tick and emits
+  // one frame per tick with every changed chunk list.
+  ;(async () => {
+    const subscription = project.clientHmrEvents()
+    // Drop the seed transition's empty initial frame.
+    await subscription.next()
+    for await (const result of subscription) {
+      // The firehose doesn't call `processIssues` here. On canary, per-chunk
+      // per-client subscriptions populated `state.clientIssues` for per-client
+      // gating and error overlay. The firehose replaces those subscriptions,
+      // but `get_issues` on the aggregate operation captures stale issues
+      // from deleted chunk lists (cached in the task graph), which would
+      // gate HMR indefinitely after a route deletion.
+      //
+      // Route-level `subscribeToClientChanges` subscriptions still call
+      // `processIssues(currentEntryIssues, key, ...)` per-route, which gates
+      // `sendEnqueuedMessages` and feeds the `BUILT` error overlay. Those
+      // subscriptions are cleaned up on route deletion
+      // (`unsubscribeFromClientChanges` deletes the key), so they don't
+      // retain stale issues.
+
+      if (result.updates.length > 0) {
+        for (const client of [
+          ...clientsWithoutHtmlRequestId,
+          ...clientsByHtmlRequestId.values(),
+        ]) {
+          clientStates.get(client)?.turbopackUpdates.push(result)
+        }
+        hmrEventHappened = true
+        sendEnqueuedMessagesDebounce()
+      }
+    }
+  })().catch((err) => {
+    Log.error('client HMR firehose subscription error:', err)
+  })
+
   if (serverFastRefresh) {
     setupServerHmr(project, {
       reEvaluateAllModulesExpensive: async () => {
@@ -2042,17 +2054,15 @@ export async function createHotReloaderTurbopack(
         )
         deleteCache(chunkPaths)
 
-        // Clear Turbopack's runtime caches
         if (typeof __next__clear_chunk_cache__ === 'function') {
           __next__clear_chunk_cache__()
         }
 
-        // Reset the server HMR handler registry. All server runtime chunks are
-        // cleared from require.cache above; when they're next required they'll
+        // Reset the server HMR handler registry. All server runtime chunks
+        // are cleared from require.cache above; when next required they'll
         // re-register into this Map and reinstall the routing dispatcher.
         globalThis.__turbopack_server_hmr_handlers__ = new Map()
 
-        // Clear all edge contexts
         await clearAllModuleContexts()
 
         resetFetch()
