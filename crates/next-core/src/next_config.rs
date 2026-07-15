@@ -1371,6 +1371,9 @@ pub struct ExperimentalConfig {
     turbopack_input_source_maps: Option<bool>,
     turbopack_tree_shaking: Option<bool>,
     turbopack_scope_hoisting: Option<bool>,
+    /// Cache fully static JSX elements in module-scope variables in
+    /// production RSC bundles. Defaults to false.
+    turbopack_hoist_static_jsx: Option<bool>,
     /// Custom URL prefix for Web Worker URLs (the entrypoint and the module
     /// chunks loaded inside the worker) produced by
     /// `new Worker(new URL(..., import.meta.url))`. Mirrors webpack's
@@ -2472,6 +2475,13 @@ impl NextConfig {
                 .turbopack_infer_module_side_effects
                 .unwrap_or(true),
         )
+    }
+
+    #[turbo_tasks::function]
+    pub fn turbopack_hoist_static_jsx(&self) -> Vc<bool> {
+        // Experiment: enabled by default on this branch to exercise the
+        // transform across the full CI suite.
+        Vc::cell(self.experimental.turbopack_hoist_static_jsx.unwrap_or(true))
     }
 
     #[turbo_tasks::function]
