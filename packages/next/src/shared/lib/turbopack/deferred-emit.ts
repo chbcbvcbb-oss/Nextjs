@@ -1,27 +1,18 @@
 /**
- * A one-shot callback that fires after a delay unless it's cancelled or flushed
- * first.
+ * Fires a callback after a delay unless it's cancelled or flushed first.
  *
- * Turbopack reports a compile pass (a BUILDING/BUILT pair) for *every*
- * foreground-job cycle, including empty no-op recompiles that changed nothing
- * (e.g. scheduled by request/render activity). Both the dev server (deciding
- * whether to send the BUILDING HMR message) and the browser client (deciding
- * whether to log `[Fast Refresh] rebuilding`) want the same behavior: defer the
- * "compiling started" signal briefly, then
- *
- *   - `flush()` it immediately once real work shows up (so it still precedes
- *     the update it belongs to), or
- *   - `cancel()` it if the pass ends first with nothing to show (suppressing
- *     the spurious signal entirely).
- *
- * `schedule()` replaces any still-pending emit, so re-arming on a new pass is
- * safe.
+ * `schedule()` replaces any still-pending emit.
  */
 export class DeferredEmit {
   #timer: ReturnType<typeof setTimeout> | undefined
   #fn: (() => void) | undefined
 
-  /** Arm `fn` to run after `delayMs`, replacing any still-pending emit. */
+  /**
+   * Arm `fn` to run after `delayMs`, replacing any still-pending emit.
+   *
+   * @param delayMs The delay in milliseconds before the callback is fired.
+   * @param fn The callback function to be executed after the delay.
+   */
   schedule(delayMs: number, fn: () => void): void {
     this.cancel()
     this.#fn = fn
@@ -33,7 +24,9 @@ export class DeferredEmit {
     }, delayMs)
   }
 
-  /** If an emit is pending, run it now instead of waiting for the delay. */
+  /**
+   * If an emit is pending, run it now instead of waiting for the delay.
+   */
   flush(): void {
     if (this.#timer === undefined) {
       return
@@ -45,7 +38,9 @@ export class DeferredEmit {
     fnToRun?.()
   }
 
-  /** Cancel a pending emit without running it. */
+  /**
+   * Cancel a pending emit without running it.
+   */
   cancel(): void {
     if (this.#timer === undefined) {
       return
