@@ -22,7 +22,9 @@ import {
   FetchStrategy,
   type PrefetchTaskFetchStrategy,
 } from '../components/segment-cache/types'
-import type { RouterTransitionPrefetchIntent } from '../router-transition-types'
+// How much prefetching the `prefetch` prop requested. Mapped to the fetch
+// strategy that the prefetch scheduler understands.
+type LinkPrefetchIntent = 'full' | 'auto' | 'none'
 
 type Url = string | UrlObject
 type RequiredKeys<T> = {
@@ -257,8 +259,7 @@ function linkClicked(
   replace?: boolean,
   scroll?: boolean,
   onNavigate?: OnNavigateEventHandler,
-  transitionTypes?: string[],
-  prefetchIntent: RouterTransitionPrefetchIntent = 'none'
+  transitionTypes?: string[]
 ): void {
   if (typeof window !== 'undefined') {
     const { nodeName } = e.currentTarget
@@ -312,8 +313,7 @@ function linkClicked(
         replace ? 'replace' : 'push',
         scroll === false ? ScrollBehavior.NoScroll : ScrollBehavior.Default,
         linkInstanceRef.current,
-        transitionTypes,
-        prefetchIntent
+        transitionTypes
       )
     })
   }
@@ -381,7 +381,7 @@ export default function LinkComponent(
   const router = React.useContext(AppRouterContext)
 
   const prefetchEnabled = prefetchProp !== false
-  const prefetchIntent: RouterTransitionPrefetchIntent =
+  const prefetchIntent: LinkPrefetchIntent =
     prefetchProp === false ? 'none' : prefetchProp === true ? 'full' : 'auto'
 
   const fetchStrategy =
@@ -699,8 +699,7 @@ export default function LinkComponent(
         replace,
         scroll,
         onNavigate,
-        transitionTypes,
-        prefetchIntent
+        transitionTypes
       )
     },
     onMouseEnter(e) {
@@ -808,7 +807,7 @@ export const useLinkStatus = () => {
 }
 
 function getFetchStrategyFromPrefetchIntent(
-  prefetchIntent: Exclude<RouterTransitionPrefetchIntent, 'none'>
+  prefetchIntent: Exclude<LinkPrefetchIntent, 'none'>
 ): PrefetchTaskFetchStrategy {
   if (process.env.__NEXT_CACHE_COMPONENTS) {
     if (prefetchIntent === 'full') {

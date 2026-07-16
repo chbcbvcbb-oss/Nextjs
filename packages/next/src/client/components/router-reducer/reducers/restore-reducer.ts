@@ -79,6 +79,9 @@ export function restoreReducer(
   )
 
   if (task === null) {
+    // Falling back to a full-page navigation. (Settling the action with an
+    // MPA state untracks the instrumentation transition: it can never
+    // commit.)
     return completeHardNavigation(state, restoredUrl, 'replace')
   }
   spawnDynamicRequests(
@@ -104,6 +107,7 @@ export function restoreReducer(
     renderedSearch,
     task.node,
     task.route,
-    restoredNextUrl
+    restoredNextUrl,
+    action.instrumentationTransition
   )
 }

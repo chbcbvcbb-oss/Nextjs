@@ -26,6 +26,7 @@ import {
 } from '../../shared/lib/hooks-client-context.shared-runtime'
 import { dispatchAppRouterAction, useActionQueue } from './use-action-queue'
 import { setLastCommittedTree } from './router-reducer/reducers/committed-state'
+import { commitRouterTransition } from './router-transition'
 import { AppRouterAnnouncer } from './app-router-announcer'
 import { RedirectBoundary } from './redirect-boundary'
 import { findHeadInCache } from './router-reducer/reducers/find-head-in-cache'
@@ -97,6 +98,13 @@ function HistoryUpdater({
       window.history.replaceState(historyState, '', canonicalUrl)
     }
 
+    // For the instrumentation-client router transition hooks
+    // (`unstable_onRouterTransitionCommit`/`unstable_onRouterTransitionAbort`):
+    // report the commit at the moment the navigation is applied to the
+    // browser, for the transition carried by the state
+    // (`instrumentationTransition`); a no-op if this state isn't a tracked
+    // transition or its transition was already committed.
+    commitRouterTransition(appRouterState)
     setLastCommittedTree(tree)
   }, [appRouterState])
 
@@ -225,10 +233,20 @@ function Router({
       // of the last MPA navigation.
       globalMutable.pendingMpaPath = undefined
 
+      // This dispatches the restore action directly via
+      // dispatchAppRouterAction instead of going through
+      // dispatchTraverseAction, because a browser BFCache restore is not a
+      // user navigation: dispatchTraverseAction would emit a transition
+      // `start` event and create a pending transition, but nothing
+      // "navigated" here — we're re-synchronizing router state after the
+      // browser revived a frozen page. A null instrumentationTransition keeps
+      // this restore out of the tracked transition lifecycle, so it can never
+      // emit a commit.
       dispatchAppRouterAction({
         type: ACTION_RESTORE,
         url: new URL(window.location.href),
         historyState: window.history.state.__PRIVATE_NEXTJS_INTERNALS_TREE,
+        instrumentationTransition: null,
       })
     }
 
@@ -300,6 +318,10 @@ function Router({
     throw unresolvedThenable
   }
 
+  // This entire effect is about shallow routing: it patches
+  // window.history.pushState/replaceState so that direct History API calls
+  // made outside of Next.js (i.e. shallow URL updates) still keep the router
+  // state — usePathname and useSearchParams — in sync with the address bar.
   useEffect(() => {
     const originalPushState = window.history.pushState.bind(window.history)
     const originalReplaceState = window.history.replaceState.bind(
@@ -319,6 +341,11 @@ function Router({
           type: ACTION_RESTORE,
           url: new URL(url ?? href, href),
           historyState: appHistoryState,
+          // TODO: Consider tracking perf for shallow routing. For now a
+          // shallow history update is not a tracked transition — no `start`
+          // is emitted for it, so there is no pending transition to thread
+          // through, and it never reports a commit.
+          instrumentationTransition: null,
         })
       })
     }

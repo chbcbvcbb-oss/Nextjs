@@ -35,10 +35,15 @@ import type {
   PrefetchOptions,
 } from '../../shared/lib/app-router-context.shared-runtime'
 import { setLinkForCurrentNavigation, type LinkInstance } from './links'
-import type { RouterTransitionPrefetchIntent } from '../router-transition-types'
 import type { GlobalErrorComponent } from './builtin/global-error'
 import { isJavaScriptURLString } from '../lib/javascript-url'
-import { startRouterTransition } from './router-transition'
+import {
+  getInstrumentationTransition,
+  markRouterTransitionAsReplaced,
+  settleRouterTransition,
+  startRouterTransition,
+  untrackRouterTransition,
+} from './router-transition'
 
 export type DispatchStatePromise = React.Dispatch<ReducerState>
 
@@ -128,6 +133,16 @@ async function runAction({
       return
     }
 
+    // Settle the transition lifecycle here, at the single point every action
+    // funnels through: navigations get their destination tree attached (or
+    // are untracked when they failed / left the SPA lifecycle), and states
+    // derived from a not-yet-committed navigation carry its transition
+    // forward. The classification over action types lives in
+    // settleRouterTransition and is exhaustive by construction. (Discarded
+    // actions, excluded above, were marked as replaced when the newer
+    // navigation discarded them, and are reported when that race settles.)
+    settleRouterTransition(payload, prevState, nextState)
+
     actionQueue.state = nextState
 
     runRemainingActions(actionQueue, action, setState)
@@ -137,6 +152,19 @@ async function runAction({
   // if the action is a promise, set up a callback to resolve it
   if (isThenable(actionResult)) {
     actionResult.then(handleResult, (err) => {
+      // The reducer threw — expected failures like a rejected fetch resolve
+      // to the current state instead, so this is an unexpected error thrown
+      // from the navigation code itself (e.g. a bug hit while diffing the
+      // route trees). This action's state will never be applied — even if a
+      // destination tree was already attached — and the tree check in
+      // handleResult never runs. Stop tracking the transition here so it
+      // isn't misreported as "replaced" by a later, unrelated commit. A
+      // discarded action keeps its transition, exactly as on the resolve
+      // path: it was marked as replaced when the newer navigation discarded
+      // it, and is reported when that navigation's race settles.
+      if (!action.discarded) {
+        untrackRouterTransition(getInstrumentationTransition(payload))
+      }
       runRemainingActions(actionQueue, action, setState)
       action.reject(err)
     })
@@ -197,6 +225,15 @@ function dispatchAction(
     // Navigations (including back/forward) take priority over any pending actions.
     // Mark the pending action as discarded (so the state is never applied) and start the navigation action immediately.
     actionQueue.pending.discarded = true
+
+    // The discarded navigation's state can never be applied, so its tracked
+    // transition can no longer commit. Record that it was replaced, so the
+    // transition lifecycle reports it correctly once this race settles: as
+    // aborted when the winning navigation commits, or dropped if every
+    // navigation in the race fails.
+    markRouterTransitionAsReplaced(
+      getInstrumentationTransition(actionQueue.pending.payload)
+    )
 
     // The rest of the current queue should still execute after this navigation.
     // (Note that it can't contain any earlier navigations, because we always put those into `actionQueue.pending` by calling `runAction`)
@@ -267,13 +304,18 @@ function getAppRouterActionQueue(): AppRouterActionQueue {
   return globalActionQueue
 }
 
+/**
+ * Dispatches a push/replace navigation. Every user-initiated SPA navigation
+ * funnels through here: `<Link>` clicks (via `linkClicked`) and
+ * `useRouter().push()`/`.replace()` below. Back/forward traversals go through
+ * `dispatchTraverseAction` instead.
+ */
 export function dispatchNavigateAction(
   href: string,
   navigateType: NavigateAction['navigateType'],
   scrollBehavior: ScrollBehavior,
   linkInstanceRef: LinkInstance | null,
-  transitionTypes: string[] | undefined,
-  prefetchIntent: RouterTransitionPrefetchIntent | null
+  transitionTypes: string[] | undefined
 ): void {
   // TODO: This stuff could just go into the reducer. Leaving as-is for now
   // since we're about to rewrite all the router reducer stuff anyway.
@@ -290,12 +332,13 @@ export function dispatchNavigateAction(
   }
 
   setLinkForCurrentNavigation(linkInstanceRef)
-  startRouterTransition(
-    href,
-    navigateType,
-    getAppRouterActionQueue().state.tree,
-    prefetchIntent
-  )
+
+  // Create the pending transition and emit `start` here, before the action is
+  // queued, so the hook runs outside React's render phase. (A user hook that
+  // throws during the reducer would otherwise break error isolation between
+  // hooks.) The transition object is threaded on the action so the reducer can
+  // attach the destination tree to it once it exists.
+  const instrumentationTransition = startRouterTransition(href, navigateType)
 
   dispatchAppRouterAction({
     type: ACTION_NAVIGATE,
@@ -304,6 +347,7 @@ export function dispatchNavigateAction(
     locationSearch: location.search,
     scrollBehavior,
     navigateType,
+    instrumentationTransition,
   })
 }
 
@@ -311,16 +355,12 @@ export function dispatchTraverseAction(
   href: string,
   historyState: AppHistoryState | undefined
 ) {
-  startRouterTransition(
-    href,
-    'traverse',
-    getAppRouterActionQueue().state.tree,
-    null
-  )
+  const instrumentationTransition = startRouterTransition(href, 'traverse')
   dispatchAppRouterAction({
     type: ACTION_RESTORE,
     url: new URL(href),
     historyState,
+    instrumentationTransition,
   })
 }
 
@@ -374,8 +414,14 @@ function gesturePush(href: string, options?: NavigateOptions): void {
       state.nextUrl,
       freshnessPolicy,
       scrollBehavior,
-      'push'
+      'push',
+      // Untracked: see the TODO below.
+      null
     )
+    // TODO: Figure out transition tracking for gesture navigations. They are
+    // optimistic forks dispatched through useOptimistic rather than the
+    // action queue, so they bypass the settleRouterTransition chokepoint and
+    // don't fit the start/commit/abort lifecycle yet.
     dispatchGestureState(forkedGestureState)
   }
 }
@@ -450,8 +496,7 @@ export const publicAppRouterInstance: AppRouterInstance = {
           ? ScrollBehavior.NoScroll
           : ScrollBehavior.Default,
         null,
-        options?.transitionTypes,
-        null
+        options?.transitionTypes
       )
     })
   },
@@ -469,8 +514,7 @@ export const publicAppRouterInstance: AppRouterInstance = {
           ? ScrollBehavior.NoScroll
           : ScrollBehavior.Default,
         null,
-        options?.transitionTypes,
-        null
+        options?.transitionTypes
       )
     })
   },

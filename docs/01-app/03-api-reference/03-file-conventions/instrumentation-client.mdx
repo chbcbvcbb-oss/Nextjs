@@ -68,7 +68,7 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-The event includes the transition metadata and source context known when the navigation is dispatched:
+The event includes the transition's `id`, a framework-captured `timestamp`, and a `from` route describing the route the navigation started from:
 
 ```ts filename="instrumentation-client.ts" switcher
 import type { RouterTransitionStartEvent, RouterTransitionType } from 'next'
@@ -76,9 +76,9 @@ import type { RouterTransitionStartEvent, RouterTransitionType } from 'next'
 export function onRouterTransitionStart(
   url: string,
   navigationType: RouterTransitionType,
-  { id, timestamp, fromRoutes, prefetchIntent }: RouterTransitionStartEvent
+  { id, timestamp, from }: RouterTransitionStartEvent
 ) {
-  console.log(id, timestamp, url, navigationType, fromRoutes, prefetchIntent)
+  console.log(id, timestamp, url, navigationType, from.renderedPathname)
 }
 ```
 
@@ -89,22 +89,56 @@ export function onRouterTransitionStart(url, navigationType, event) {
     event.timestamp,
     url,
     navigationType,
-    event.fromRoutes,
-    event.prefetchIntent
+    event.from.renderedPathname
   )
 }
 ```
 
-`onRouterTransitionStart` receives:
+You can also observe when a transition commits or is aborted. These hooks are `unstable_`-prefixed while the lifecycle is experimental, and every event for a transition shares the same `id` so you can correlate them:
+
+```ts filename="instrumentation-client.ts" switcher
+import type {
+  RouterTransitionAbortEvent,
+  RouterTransitionCommitEvent,
+  RouterTransitionType,
+} from 'next'
+
+export function unstable_onRouterTransitionCommit(
+  url: string,
+  navigationType: RouterTransitionType,
+  { id, timestamp, to }: RouterTransitionCommitEvent
+) {
+  console.log(id, timestamp, url, navigationType, to.renderedPathname)
+}
+
+export function unstable_onRouterTransitionAbort(
+  url: string,
+  navigationType: RouterTransitionType,
+  { id, timestamp, replacedBy }: RouterTransitionAbortEvent
+) {
+  // `replacedBy` is the id of the transition whose commit replaced this one.
+  console.log(id, timestamp, url, navigationType, replacedBy)
+}
+```
+
+Each transition emits `onRouterTransitionStart` followed by at most one of `unstable_onRouterTransitionCommit` (when it is applied to the page) or `unstable_onRouterTransitionAbort` (when a newer navigation replaces it first). A transition that leaves the page entirely (a full-page navigation, such as an external URL or a route the client cannot render) or whose fetch fails emits no terminal event, so a `start` without a commit or abort is not necessarily still in flight.
+
+The hooks receive:
 
 - `url: string` - The URL being navigated to
 - `navigationType: 'push' | 'replace' | 'traverse'` - The type of navigation
-- `event.id` - An opaque ID shared by events for this transition
+- `event.id` - An opaque ID shared by every event for this transition
 - `event.timestamp` - A framework-captured Unix timestamp in milliseconds
-- `event.fromRoutes` - Route patterns visible before navigation. The primary `children` route is first, followed by parallel slots in deterministic order
-- `event.prefetchIntent` - For link navigations, whether the clicked link requested full prefetching (`full`), used automatic prefetching (`auto`), or did not request prefetching (`none`). For navigations with no associated link (programmatic `router.push()`/`router.replace()`, or browser back/forward) this is `null`, since no link prefetch intent applies
+- `event.replacedBy` (abort only) - The `id` of the transition whose commit replaced this one
 
-Route entries use filesystem-style patterns, so a navigation away from `/blog/hello` may report `/blog/[slug]`.
+The `start` event also carries `event.from` describing the route the navigation left, and the `commit` event carries `event.to`, describing the route that was committed. Both share the `RouterTransitionRoute` type:
+
+- `renderedPathname` - The server's post-rewrite pathname (the route that actually rendered), which can differ from the canonical URL
+- `canonicalUrl` - The URL shown in the browser address bar
+- `routes` - The rendered routes, primary (page) first, then parallel slots. Each entry pairs a `template` (with dynamic segments in their source notation) with the `params` that fill it, keyed by param name: a navigation away from `/blog/hello` reports `{ template: '/blog/[slug]', params: { slug: 'hello' } }`, and a photo modal intercepted over a gallery reports `{ template: '/gallery/@modal/(.)photos/[id]', params: { id: '1' } }`. Params are scoped per template, and catch-all values are arrays of path segments
+- `searchParams` - The post-rewrite search params
+
+A hash-only navigation keeps the same route, so a commit's `to` matches its start's `from` (only the hash-bearing canonical URL differs).
 
 Hook errors are isolated and do not affect navigation or other hooks.
 

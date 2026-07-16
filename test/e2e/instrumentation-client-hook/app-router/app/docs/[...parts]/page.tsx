@@ -11,5 +11,5 @@ export default async function Page({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
   const search = await searchParams
-  return <h1 id="blog-post">Blog post: {JSON.stringify(search)}</h1>
+  return <h1 id="docs-page">Docs: {JSON.stringify(search)}</h1>
 }

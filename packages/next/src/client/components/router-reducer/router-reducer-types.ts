@@ -3,6 +3,7 @@ import type { FlightRouterState } from '../../../shared/lib/app-router-types'
 import type { NavigationSeed } from '../segment-cache/navigation'
 import type { FetchServerResponseResult } from './fetch-server-response'
 import type { FreshnessPolicy } from './ppr-navigations'
+import type { PendingRouterTransition } from '../router-transition'
 
 export const ACTION_REFRESH = 'refresh'
 export const ACTION_NAVIGATE = 'navigate'
@@ -94,6 +95,11 @@ export interface NavigateAction {
   locationSearch: Location['search']
   navigateType: 'push' | 'replace'
   scrollBehavior: ScrollBehavior
+  // The pending transition created when the dispatcher emitted `start` (null
+  // when the experimental lifecycle is disabled). Carried on the action so
+  // the queue can settle it — attach the destination tree, or untrack it —
+  // when the action completes (see settleRouterTransition).
+  instrumentationTransition: PendingRouterTransition | null
 }
 
 /**
@@ -109,6 +115,10 @@ export interface RestoreAction {
   type: typeof ACTION_RESTORE
   url: URL
   historyState: AppHistoryState | undefined
+  // The pending transition created by the dispatcher for genuine back/forward
+  // traversals, or null for the pushState/replaceState sync path (not a
+  // navigation).
+  instrumentationTransition: PendingRouterTransition | null
 }
 
 export type AppHistoryState = {
@@ -256,6 +266,24 @@ export type AppRouterState = {
   previousNextUrl: string | null
 
   debugInfo: Array<unknown> | null
+
+  /**
+   * INSTRUMENTATION ONLY — the tracked transition this state is the
+   * destination of, for the instrumentation-client router transition hooks.
+   * `null` when the state is not a tracked destination: the lifecycle flag
+   * is off, the state predates any navigation (initial state), or the state
+   * left the SPA (MPA fallback). Destination-setting reducers
+   * (navigate/restore) stamp the transition threaded on their action;
+   * destination-preserving reducers (refresh, server patch, HMR refresh, a
+   * non-redirect server action) carry the base state's transition forward,
+   * since their derived state re-derives the same destination and may
+   * commit in its place.
+   *
+   * Consumed read-only by HistoryUpdater, which reports `commit` for the
+   * transition carried by the state it applies. Nothing in the router may
+   * otherwise depend on this field.
+   */
+  instrumentationTransition: PendingRouterTransition | null
 }
 
 export type ReadonlyReducerState = Readonly<AppRouterState>
