@@ -1141,5 +1141,8 @@
   "1140": "Route %s used \\`import('next/root-params').%s()\\` inside \\`\"use cache\"\\` nested within \\`unstable_cache\\`. Root params are not available in this context.",
   "1141": "Route %s used \\`import('next/root-params').%s()\\` inside \\`unstable_cache\\`. This is not supported. Use \\`\"use cache\"\\` instead.",
   "1142": "Route %s used \\`import('next/root-params').%s()\\` inside \\`generateStaticParams\\`, but the \\`%s\\` parameter was not provided by a parent \\`generateStaticParams\\`. In \\`generateStaticParams\\`, root params are only available for segments nested below the segment that provides them.",
-  "1143": "Response body exceeded maximum size of %s bytes"
+  "1143": "Response body exceeded maximum size of %s bytes",
+  "1144": "Could not parse output from TypeScript's --showConfig.",
+  "1145": "TypeScript %s does not provide the compiler API required by Next.js. Enable %s in your Next.js config to use the TypeScript CLI, or install TypeScript 6 instead.",
+  "1146": "TypeScript CLI interrupted by %s"
 }
