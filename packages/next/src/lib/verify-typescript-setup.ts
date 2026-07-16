@@ -22,6 +22,9 @@ import { resolveFrom } from './resolve-from'
 const typescriptPackage: MissingDependency = {
   file: 'typescript/lib/typescript.js',
   pkg: 'typescript',
+  // TypeScript 7 removed the JavaScript compiler API that Next.js requires, so
+  // pin auto-installs to the supported v6 range instead of pulling `latest`.
+  install: 'typescript@^6.0.0',
   exportsRestrict: true,
 }
 
@@ -103,6 +106,35 @@ export async function verifyAndRunTypeScript({
       dir,
       requiredPackages
     )
+
+    // Detect and reject TypeScript >=7. The native compiler no longer ships the JavaScript compiler API
+    // (`typescript/lib/typescript.js`) that Next.js loads.
+    // TODO: directly support the command line api so we are compatible with all TSC versions
+    const installedTypescriptPackageJsonPath = deps.resolved.get(
+      join('typescript', 'package.json')
+    )
+    if (installedTypescriptPackageJsonPath) {
+      const installedTypescriptVersion = require(
+        installedTypescriptPackageJsonPath
+      ).version
+      if (
+        installedTypescriptVersion &&
+        // Use the lowest prerelease sentinel `7.0.0-0` so that TypeScript 7
+        // prereleases (e.g. `7.0.0-beta`, `7.0.0-rc`, or nightly `7.0.0-dev.*`
+        // builds published to the `next` dist-tag) are also rejected. Under
+        // semver precedence a prerelease of `7.0.0` sorts *before* `7.0.0`, so
+        // comparing against `7.0.0` would let those versions slip through.
+        semver.gte(installedTypescriptVersion, '7.0.0-0', {
+          includePrerelease: true,
+        })
+      ) {
+        throw new CompileError(
+          `TypeScript ${installedTypescriptVersion} is not supported by this version of Next.js. ` +
+            `The TypeScript 7 native compiler does not provide the JavaScript compiler API that Next.js requires. ` +
+            `Install TypeScript 6 (e.g. ${bold('npm install --save-dev typescript@^6')}) or upgrade to a newer version of Next.js that supports TypeScript 7.`
+        )
+      }
+    }
 
     // If @typescript/native-preview is installed and only the typescript package is missing,
     // we can skip auto-installing typescript since the native preview provides TS compilation.
