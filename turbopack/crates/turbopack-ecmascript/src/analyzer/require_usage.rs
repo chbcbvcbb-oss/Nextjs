@@ -1,5 +1,6 @@
 //! Narrowing which exports of a `require("…")`ed module are used. The main
-//! analyzer walk recognizes each call's immediate consumption inline (see
+//! analyzer walk recognizes each call's immediate consumption inline (a bare
+//! `require(...)` statement discards its result → `Evaluation`; see
 //! `graph::visitor`); a `const x = require(...)` namespace binding is scanned
 //! here ([`resolve_namespace_bindings`]), deny-by-default to `ExportUsage::All`.
 
@@ -64,6 +65,8 @@ pub(crate) fn resolve_namespace_bindings(
 
     for (id, span_lo) in bindings {
         let usage = match visitor.usage.remove(id) {
+            // Bound but never read → only the target's evaluation matters.
+            Some(NamespaceUsage::Members(names)) if names.is_empty() => ExportUsage::Evaluation,
             Some(NamespaceUsage::Members(names)) => {
                 ExportUsage::PartialNamespaceObject(names.into_iter().collect())
             }

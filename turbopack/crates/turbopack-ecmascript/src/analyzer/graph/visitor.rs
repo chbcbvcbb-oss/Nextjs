@@ -1273,6 +1273,8 @@ impl<'a> Analyzer<'a, '_> {
             // `const { a, b } = require(...)`: the used members are the keys.
             Pat::Object(_) => {
                 let usage = match extract_names_from_object_pat(&n.name) {
+                    // `const {} = require(...)`: no members read → evaluation only.
+                    Some(names) if names.is_empty() => ExportUsage::Evaluation,
                     Some(names) => ExportUsage::PartialNamespaceObject(names),
                     None => ExportUsage::All,
                 };
@@ -1295,6 +1297,16 @@ impl<'a> Analyzer<'a, '_> {
             None => ExportUsage::All,
         };
         self.record_require_resolved(call.span.lo, usage);
+    }
+
+    /// Recognizes a bare `require("…")` statement whose result is discarded.
+    fn maybe_record_require_usage_stmt(&mut self, n: &ExprStmt) {
+        if !self.require_usage_enabled() {
+            return;
+        }
+        if let Some(call) = as_require_call(&n.expr, self.eval_context.unresolved_mark) {
+            self.record_require_resolved(call.span.lo, ExportUsage::Evaluation);
+        }
     }
 }
 
@@ -1452,6 +1464,15 @@ impl VisitAstPath for Analyzer<'_, '_> {
             ast_path,
             CallOrNewExpr::New(n),
         );
+    }
+
+    fn visit_expr_stmt<'ast: 'r, 'r>(
+        &mut self,
+        n: &'ast ExprStmt,
+        ast_path: &mut AstNodePath<AstParentNodeRef<'r>>,
+    ) {
+        self.maybe_record_require_usage_stmt(n);
+        n.visit_children_with_ast_path(self, ast_path);
     }
 
     fn visit_member_expr<'ast: 'r, 'r>(
