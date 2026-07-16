@@ -4,9 +4,10 @@ use std::{
 };
 
 use bumpalo::boxed::Box as BumpBox;
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use swc_core::{
-    common::{Span, Spanned, SyntaxContext, pass::AstNodePath},
+    common::{BytePos, Span, Spanned, SyntaxContext, pass::AstNodePath},
     ecma::{
         ast::*,
         atoms::atom,
@@ -24,6 +25,7 @@ use crate::{
         cjs_ast::{is_exports_object, is_global},
         graph::{ConditionalKind, Effect, EffectArg, EffectsBlock, EvalContext, VarGraph},
         is_unresolved_id,
+        require_usage::{as_require_call, resolve_namespace_bindings},
     },
     code_gen::CodeGen,
     references::{
@@ -31,7 +33,7 @@ use crate::{
         cjs::{CjsExportDrop, CjsExportsDropCodeGen},
         esm::EsmModuleItem,
     },
-    utils::{AstPathRange, unparen},
+    utils::{AstPathRange, extract_name_from_member_prop, extract_names_from_object_pat, unparen},
 };
 
 enum EarlyReturn<'a> {
@@ -101,6 +103,17 @@ struct CjsExportsCollector {
     writes: Vec<CjsExportDrop>,
     /// Whether the `exports.__esModule = true` interop marker is set.
     has_es_module: bool,
+}
+
+/// Recognizes how each `require("…")` call's result is consumed during the main
+/// analyzer walk. `const x = require(...)` namespace bindings are deferred to a
+/// whole-module scan (see [`resolve_namespace_bindings`]).
+#[derive(Default)]
+struct RequireUsageCollector {
+    /// Usage resolved from a call's immediate position, keyed by call position.
+    resolved: FxHashMap<BytePos, ExportUsage>,
+    /// `const x = require(...)` bindings → call position, resolved in pass 2.
+    bindings: FxHashMap<Id, BytePos>,
 }
 
 trait FunctionLike {
@@ -193,6 +206,7 @@ mod analyzer_state {
         cjs_exports: Option<CjsExportsCollector>,
         cjs_export_target: bool,
         cjs_export_value: bool,
+        require_usage: Option<RequireUsageCollector>,
     }
 
     impl<'a> Analyzer<'a, '_> {
@@ -601,6 +615,44 @@ mod analyzer_state {
                     && !self.is_in_fn()
                     && !self.is_in_nested_block_scope())
         }
+
+        /// Enables `require("…")` export-usage recognition. Called by
+        /// `create_graph`.
+        pub(in crate::analyzer::graph) fn enable_require_usage(&mut self) {
+            self.state.require_usage = Some(RequireUsageCollector::default());
+        }
+
+        pub(super) fn require_usage_enabled(&self) -> bool {
+            self.state.require_usage.is_some()
+        }
+
+        pub(super) fn record_require_resolved(&mut self, span_lo: BytePos, usage: ExportUsage) {
+            if let Some(c) = &mut self.state.require_usage {
+                c.resolved.insert(span_lo, usage);
+            }
+        }
+
+        pub(super) fn record_require_binding(&mut self, id: Id, span_lo: BytePos) {
+            if let Some(c) = &mut self.state.require_usage {
+                c.bindings.insert(id, span_lo);
+            }
+        }
+
+        /// Consumes the collector, resolving any namespace bindings with a second
+        /// pass over `program`. Empty if recognition wasn't enabled.
+        pub(super) fn resolve_require_usage(
+            &mut self,
+            program: &Program,
+        ) -> FxHashMap<BytePos, ExportUsage> {
+            let Some(collector) = self.state.require_usage.take() else {
+                return FxHashMap::default();
+            };
+            let mut resolved = collector.resolved;
+            if !collector.bindings.is_empty() {
+                resolve_namespace_bindings(program, &collector.bindings, &mut resolved);
+            }
+            resolved
+        }
     }
 }
 
@@ -725,38 +777,6 @@ fn extract_names_from_then_callback(call: &CallExpr) -> Option<SmallVec<[RcStr; 
         }
         _ => None,
     }
-}
-
-fn extract_name_from_member_prop(prop: &MemberProp) -> Option<SmallVec<[RcStr; 1]>> {
-    match prop {
-        MemberProp::Ident(ident) => Some(SmallVec::from_buf([ident.sym.as_str().into()])),
-        MemberProp::Computed(ComputedPropName {
-            expr: box Expr::Lit(Lit::Str(s)),
-            ..
-        }) => s.value.as_str().map(|v| SmallVec::from_buf([v.into()])),
-        _ => None,
-    }
-}
-
-fn extract_names_from_object_pat(pat: &Pat) -> Option<SmallVec<[RcStr; 1]>> {
-    let Pat::Object(obj_pat) = pat else {
-        return None;
-    };
-    let mut names = SmallVec::new();
-    for prop in &obj_pat.props {
-        match prop {
-            ObjectPatProp::KeyValue(kv) => match &kv.key {
-                PropName::Ident(ident) => names.push(ident.sym.as_str().into()),
-                PropName::Str(s) => names.push(s.value.as_str()?.into()),
-                _ => return None, // computed key, can't determine statically
-            },
-            ObjectPatProp::Assign(assign) => {
-                names.push(assign.key.sym.as_str().into());
-            }
-            ObjectPatProp::Rest(_) => return None, // rest pattern means all exports needed
-        }
-    }
-    Some(names)
 }
 
 pub fn as_parent_path_with(
@@ -1235,6 +1255,47 @@ impl<'a> Analyzer<'a, '_> {
             as_parent_path(ast_path).into(),
         );
     }
+
+    /// Recognizes how a `const … = require("…")` declarator consumes the call.
+    fn maybe_record_require_usage_var(&mut self, n: &VarDeclarator) {
+        if !self.require_usage_enabled() {
+            return;
+        }
+        let Some(init) = &n.init else {
+            return;
+        };
+        let Some(call) = as_require_call(init, self.eval_context.unresolved_mark) else {
+            return;
+        };
+        match &n.name {
+            // `const x = require(...)`: analyze how `x` is used module-wide.
+            Pat::Ident(binding) => self.record_require_binding(binding.id.to_id(), call.span.lo),
+            // `const { a, b } = require(...)`: the used members are the keys.
+            Pat::Object(_) => {
+                let usage = match extract_names_from_object_pat(&n.name) {
+                    Some(names) => ExportUsage::PartialNamespaceObject(names),
+                    None => ExportUsage::All,
+                };
+                self.record_require_resolved(call.span.lo, usage);
+            }
+            _ => self.record_require_resolved(call.span.lo, ExportUsage::All),
+        }
+    }
+
+    /// Recognizes `require("…").foo`.
+    fn maybe_record_require_usage_member(&mut self, n: &MemberExpr) {
+        if !self.require_usage_enabled() {
+            return;
+        }
+        let Some(call) = as_require_call(&n.obj, self.eval_context.unresolved_mark) else {
+            return;
+        };
+        let usage = match extract_name_from_member_prop(&n.prop) {
+            Some(names) => ExportUsage::PartialNamespaceObject(names),
+            None => ExportUsage::All,
+        };
+        self.record_require_resolved(call.span.lo, usage);
+    }
 }
 
 impl VisitAstPath for Analyzer<'_, '_> {
@@ -1398,6 +1459,8 @@ impl VisitAstPath for Analyzer<'_, '_> {
         member_expr: &'ast MemberExpr,
         ast_path: &mut AstNodePath<AstParentNodeRef<'r>>,
     ) {
+        self.maybe_record_require_usage_member(member_expr);
+
         if self.analyze_mode.is_code_gen() {
             let obj_value = BumpBox::new_in(
                 self.eval_context.eval(self.arena, &member_expr.obj),
@@ -1678,6 +1741,8 @@ impl VisitAstPath for Analyzer<'_, '_> {
         n: &'ast VarDeclarator,
         ast_path: &mut AstNodePath<AstParentNodeRef<'r>>,
     ) {
+        self.maybe_record_require_usage_var(n);
+
         // LHS
         {
             let mut ast_path =
@@ -2110,6 +2175,8 @@ impl VisitAstPath for Analyzer<'_, '_> {
             self.code_gens
                 .push(CjsExportsDropCodeGen::new(drops, has_es_module).into());
         }
+
+        self.data.require_usage = self.resolve_require_usage(program);
 
         self.data.code_gens = take(&mut self.code_gens);
     }
