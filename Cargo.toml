@@ -282,7 +282,7 @@ image = { version = "0.25.8", default-features = false }
 indexmap = "2.13.0"
 indoc = "2.0.0"
 itertools = "0.10.5"
-lightningcss = { version = "1.0.0-alpha.70", features = [
+lightningcss = { version = "1.0.0-alpha.71", features = [
   "serde",
   "visitor",
   "into_owned",
