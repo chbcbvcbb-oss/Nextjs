@@ -1,6 +1,7 @@
 import { dirname } from 'path'
 import findUp from 'next/dist/compiled/find-up'
 import * as Log from '../build/output/log'
+import { getGitWorktreeInfo } from './git-worktree'
 
 function findWorkRoot(cwd: string) {
   // Find-up evaluates the list of files at each level.
@@ -35,6 +36,8 @@ export function findRootDirAndLockFiles(cwd: string): {
   lockFiles: string[]
   rootDir: string
 } {
+  const worktreeInfo = getGitWorktreeInfo(cwd)
+
   const lockFile = findWorkRoot(cwd)
   if (!lockFile)
     return {
@@ -47,6 +50,10 @@ export function findRootDirAndLockFiles(cwd: string): {
     const lastLockFile = lockFiles[lockFiles.length - 1]
     const currentDir = dirname(lastLockFile)
     const parentDir = dirname(currentDir)
+
+    // If we are in a worktree that is a child of the main repo we stop
+    // at the work tree root (e.g. project/.claude/worktrees/...)
+    if (worktreeInfo?.isChild && currentDir === worktreeInfo.worktreeRoot) break
 
     // dirname('/')==='/' so if we happen to reach the FS root (as might happen in a container we need to quit to avoid looping forever
     if (parentDir === currentDir) break
