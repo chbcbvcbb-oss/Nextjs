@@ -481,7 +481,7 @@ async function createComponentTreeInternal(
       : ctx.renderOpts.dir) || ''
 
   const [notFoundElement, notFoundFilePath] =
-    await createBoundaryConventionElement({
+    createBoundaryConventionElement({
       ctx,
       conventionName: 'not-found',
       Component: NotFound,
@@ -489,7 +489,7 @@ async function createComponentTreeInternal(
       tree,
     })
 
-  const [forbiddenElement] = await createBoundaryConventionElement({
+  const [forbiddenElement] = createBoundaryConventionElement({
     ctx,
     conventionName: 'forbidden',
     Component: Forbidden,
@@ -497,7 +497,7 @@ async function createComponentTreeInternal(
     tree,
   })
 
-  const [unauthorizedElement] = await createBoundaryConventionElement({
+  const [unauthorizedElement] = createBoundaryConventionElement({
     ctx,
     conventionName: 'unauthorized',
     Component: Unauthorized,
@@ -1223,7 +1223,7 @@ function getRootParamsImpl(
   }
 }
 
-async function createBoundaryConventionElement({
+function createBoundaryConventionElement({
   ctx,
   conventionName,
   Component,
