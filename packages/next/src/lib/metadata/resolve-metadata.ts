@@ -137,8 +137,10 @@ function convertUrlsToStrings<T>(input: T): WithStringifiedURLs<T> {
     ) as WithStringifiedURLs<T>
   } else if (input && typeof input === 'object') {
     const result: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(input)) {
-      result[key] = convertUrlsToStrings(value)
+    for (const key in input) {
+      result[key] = convertUrlsToStrings(
+        (input as Record<string, unknown>)[key]
+      )
     }
     return result as WithStringifiedURLs<T>
   }
@@ -231,7 +233,9 @@ async function mergeMetadata(
     leafSegmentStaticIcons: StaticIcons
   }
 ): Promise<ResolvedMetadata> {
-  const newResolvedMetadata = structuredClone(resolvedMetadata)
+  // Shallow copy is sufficient — mergeMetadata and mergeStaticMetadata only
+  // replace top-level properties, never mutate nested objects in-place.
+  const newResolvedMetadata: ResolvedMetadata = { ...resolvedMetadata }
 
   const metadataBase = normalizeMetadataBase(
     metadata?.metadataBase !== undefined
@@ -455,7 +459,9 @@ function mergeViewport({
   resolvedViewport: ResolvedViewport
   viewport: Viewport | null
 }): ResolvedViewport {
-  const newResolvedViewport = structuredClone(resolvedViewport)
+  // Shallow copy is sufficient — mergeViewport only sets top-level scalars
+  // and resolveThemeColor returns a new array.
+  const newResolvedViewport: ResolvedViewport = { ...resolvedViewport }
 
   if (viewport) {
     for (const key_ in viewport) {
