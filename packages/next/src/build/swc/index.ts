@@ -902,13 +902,13 @@ function bindingToApi(
     projectPath: string
   ): Promise<string> {
     // Avoid mutating the existing `nextConfig` object. NOTE: This is only a shallow clone.
-    let nextConfigSerializable: Record<string, any> = { ...nextConfig }
+    let nextConfigSerializable: NextConfigComplete = { ...nextConfig }
 
     // These values are never read by Turbopack and are potentially non-serializable.
-    nextConfigSerializable.exportPathMap = {}
-    nextConfigSerializable.generateBuildId =
-      nextConfigSerializable.generateBuildId && {}
-    nextConfigSerializable.webpack = nextConfigSerializable.webpack && {}
+    delete (nextConfigSerializable as Partial<NextConfigComplete>).exportPathMap
+    delete (nextConfigSerializable as Partial<NextConfigComplete>)
+      .generateBuildId
+    delete (nextConfigSerializable as Partial<NextConfigComplete>).webpack
 
     if (nextConfigSerializable.modularizeImports) {
       nextConfigSerializable.modularizeImports = Object.fromEntries(
@@ -986,6 +986,43 @@ function bindingToApi(
       const turbopack = { ...nextConfigSerializable.turbopack }
 
       if (turbopack.rules) {
+        // Webpack loader specifiers can be absolute paths, we need it to be relative for turbopack.
+        if (turbopack.rules) {
+          turbopack.rules = { ...turbopack.rules }
+          function transformLoader(loader: string) {
+            return normalizePathOnWindows(
+              path.isAbsolute(loader)
+                ? './' + path.relative(projectPath, loader)
+                : loader
+            )
+          }
+          function transformRule(
+            rule: TurbopackLoaderItem | TurbopackRuleConfigItem
+          ): TurbopackLoaderItem | TurbopackRuleConfigItem {
+            if (typeof rule === 'string') {
+              return transformLoader(rule)
+            } else if ('loader' in rule) {
+              return {
+                ...rule,
+                loader: transformLoader(rule.loader),
+              }
+            } else {
+              return {
+                ...rule,
+                loaders: rule.loaders?.map(
+                  (v) => transformRule(v) as TurbopackLoaderItem
+                ),
+              }
+            }
+          }
+
+          for (const key in turbopack.rules) {
+            turbopack.rules[key] = Array.isArray(turbopack.rules[key])
+              ? turbopack.rules[key].map(transformRule)
+              : [transformRule(turbopack.rules[key])]
+          }
+        }
+
         turbopack.rules = serializeTurbopackRules(turbopack.rules)
       }
 
@@ -1005,6 +1042,7 @@ function bindingToApi(
           return { type: stringType, value }
         }
 
+        // @ts-expect-error improve type definition
         turbopack.ignoreIssue = turbopack.ignoreIssue.map(
           (rule: {
             path: string | RegExp
@@ -1040,6 +1078,7 @@ function bindingToApi(
         ...nextConfigSerializable.experimental,
         turbopackChunkingHeuristics: {
           ...chunkingHeuristics,
+          // @ts-expect-error improve type definition
           priorityRoutes:
             chunkingHeuristics.priorityRoutes?.map(regexComponents),
         },
