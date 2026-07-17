@@ -101,6 +101,9 @@ type ResponseCookie = NonNullable<
   ReturnType<InstanceType<typeof ResponseCookies>['get']>
 >
 
+const { serialize } =
+  require('next/dist/compiled/cookie') as typeof import('next/dist/compiled/cookie')
+
 export class MutableRequestCookiesAdapter {
   public static wrap(
     cookies: RequestCookies,
@@ -123,13 +126,13 @@ export class MutableRequestCookiesAdapter {
       const allCookies = responseCookies.getAll()
       modifiedValues = allCookies.filter((c) => modifiedCookies.has(c.name))
       if (onUpdateCookies) {
-        const serializedCookies: string[] = []
-        for (const cookie of modifiedValues) {
-          const tempCookies = new ResponseCookies(new Headers())
-          tempCookies.set(cookie)
-          serializedCookies.push(tempCookies.toString())
-        }
-
+        const serializedCookies = modifiedValues.map(
+          ({ name, value, expires, ...rest }) =>
+            serialize(name, value, {
+              ...rest,
+              expires: expires instanceof Date ? expires : undefined,
+            })
+        )
         onUpdateCookies(serializedCookies)
       }
     }
