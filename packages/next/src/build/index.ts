@@ -2431,8 +2431,9 @@ export default async function build(
                           const appConfig = workerResult.appConfig || {}
                           if (appConfig.revalidate !== 0) {
                             const hasGenerateStaticParams =
-                              workerResult.prerenderedRoutes &&
-                              workerResult.prerenderedRoutes.length > 0
+                              workerResult.prerenderedRoutes;
+                            const generateStaticParamsIsEmpty =
+                              workerResult.prerenderedRoutes && workerResult.prerenderedRoutes.length === 0;
 
                             if (
                               config.output === 'export' &&
@@ -2441,6 +2442,10 @@ export default async function build(
                             ) {
                               throw new Error(
                                 `Page "${page}" is missing "generateStaticParams()" so it cannot be used with "output: export" config.`
+                              )
+                            } else if (generateStaticParamsIsEmpty) {
+                              console.warn(
+                                `"generateStaticParams()" in page "${page}" is empty so it will be skipped when used with "output: export" config.`
                               )
                             }
 
