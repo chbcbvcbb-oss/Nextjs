@@ -7,6 +7,9 @@ import type { PreloadCallbacks } from './types'
 import { renderCssResource } from './render-css-resource'
 const EMPTY_SET: ReadonlySet<never> = new Set()
 
+// Pre-compiled at module scope — avoids re-compilation per font file per request
+const fontExtRegex = /\.(woff|woff2|eot|ttf|otf)$/
+
 export function getLayerAssets({
   ctx,
   layoutOrPagePath,
@@ -46,7 +49,7 @@ export function getLayerAssets({
     if (preloadedFontFiles.length) {
       for (let i = 0; i < preloadedFontFiles.length; i++) {
         const fontFilename = preloadedFontFiles[i]
-        const ext = /\.(woff|woff2|eot|ttf|otf)$/.exec(fontFilename)![1]
+        const ext = fontExtRegex.exec(fontFilename)![1]
         const type = `font/${ext}`
         const href = `${ctx.assetPrefix}/_next/${encodeURIPath(fontFilename)}${getAssetQueryString(ctx, true)}`
 
