@@ -133,6 +133,17 @@ describe('Cache Components Errors - Client Components', () => {
                  9 |
                To debug the issue, start the app in development mode by running \`next dev\`, then open "/client-awaited-io" in your browser to investigate the error.
                Error occurred prerendering page "/client-awaited-io". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-awaited-io": Next.js encountered uncached or runtime data during prerendering.
+
+               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+               Ways to fix this:
+                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
 
                > Export encountered errors on 1 path:
                	/client-awaited-io/page: /client-awaited-io"
@@ -164,6 +175,17 @@ describe('Cache Components Errors - Client Components', () => {
                  - Start the app in development mode by running \`next dev\`, then open "/client-awaited-io" in your browser to investigate the error.
                  - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
                Error occurred prerendering page "/client-awaited-io". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-awaited-io": Next.js encountered uncached or runtime data during prerendering.
+
+               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+               Ways to fix this:
+                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
                Export encountered an error on /client-awaited-io/page: /client-awaited-io, exiting the build."
               `)
             }
@@ -192,6 +214,17 @@ describe('Cache Components Errors - Client Components', () => {
                  9 |
                To debug the issue, start the app in development mode by running \`next dev\`, then open "/client-awaited-io" in your browser to investigate the error.
                Error occurred prerendering page "/client-awaited-io". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-awaited-io": Next.js encountered uncached or runtime data during prerendering.
+
+               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+               Ways to fix this:
+                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
 
                > Export encountered errors on 1 path:
                	/client-awaited-io/page: /client-awaited-io"
@@ -237,6 +270,17 @@ describe('Cache Components Errors - Client Components', () => {
                  - Start the app in development mode by running \`next dev\`, then open "/client-awaited-io" in your browser to investigate the error.
                  - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
                Error occurred prerendering page "/client-awaited-io". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-awaited-io": Next.js encountered uncached or runtime data during prerendering.
+
+               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+               Ways to fix this:
+                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
                Export encountered an error on /client-awaited-io/page: /client-awaited-io, exiting the build."
               `)
             }
@@ -306,6 +350,15 @@ describe('Cache Components Errors - Client Components', () => {
                }
                To debug the issue, start the app in development mode by running \`next dev\`, then open "/client-use-search-params" in your browser to investigate the error.
                Error occurred prerendering page "/client-use-search-params". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-use-search-params": Next.js encountered URL data \`useSearchParams()\` in a Client Component outside of \`<Suspense>\`.
+
+               This blocks prerendering because the value is only available at runtime.
+
+               Ways to fix this:
+                 - [stream] Wrap the component in \`<Suspense fallback={...}>\` so the hook value streams in after prerendering
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#wrap-in-or-move-into-suspense
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#allow-blocking-route
 
                > Export encountered errors on 1 path:
                	/client-use-search-params/page: /client-use-search-params"
@@ -337,6 +390,15 @@ describe('Cache Components Errors - Client Components', () => {
                  - Start the app in development mode by running \`next dev\`, then open "/client-use-search-params" in your browser to investigate the error.
                  - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
                Error occurred prerendering page "/client-use-search-params". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-use-search-params": Next.js encountered URL data \`useSearchParams()\` in a Client Component outside of \`<Suspense>\`.
+
+               This blocks prerendering because the value is only available at runtime.
+
+               Ways to fix this:
+                 - [stream] Wrap the component in \`<Suspense fallback={...}>\` so the hook value streams in after prerendering
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#wrap-in-or-move-into-suspense
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#allow-blocking-route
                Export encountered an error on /client-use-search-params/page: /client-use-search-params, exiting the build."
               `)
             }
@@ -385,6 +447,15 @@ describe('Cache Components Errors - Client Components', () => {
                  - Start the app in development mode by running \`next dev\`, then open "/client-use-search-params" in your browser to investigate the error.
                  - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
                Error occurred prerendering page "/client-use-search-params". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-use-search-params": Next.js encountered URL data \`useSearchParams()\` in a Client Component outside of \`<Suspense>\`.
+
+               This blocks prerendering because the value is only available at runtime.
+
+               Ways to fix this:
+                 - [stream] Wrap the component in \`<Suspense fallback={...}>\` so the hook value streams in after prerendering
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#wrap-in-or-move-into-suspense
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#allow-blocking-route
                Export encountered an error on /client-use-search-params/page: /client-use-search-params, exiting the build."
               `)
             }
@@ -455,6 +526,15 @@ describe('Cache Components Errors - Client Components', () => {
                }
                To debug the issue, start the app in development mode by running \`next dev\`, then open "/client-use-pathname/[id]" in your browser to investigate the error.
                Error occurred prerendering page "/client-use-pathname/[id]". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-use-pathname/[id]": Next.js encountered URL data \`usePathname()\` in a Client Component outside of \`<Suspense>\`.
+
+               This blocks prerendering because the value is only available at runtime.
+
+               Ways to fix this:
+                 - [stream] Wrap the component in \`<Suspense fallback={...}>\` so the hook value streams in after prerendering
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#wrap-in-or-move-into-suspense
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#allow-blocking-route
 
                > Export encountered errors on 1 path:
                	/client-use-pathname/[id]/page: /client-use-pathname/[id]"
@@ -486,6 +566,15 @@ describe('Cache Components Errors - Client Components', () => {
                  - Start the app in development mode by running \`next dev\`, then open "/client-use-pathname/[id]" in your browser to investigate the error.
                  - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
                Error occurred prerendering page "/client-use-pathname/[id]". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-use-pathname/[id]": Next.js encountered URL data \`usePathname()\` in a Client Component outside of \`<Suspense>\`.
+
+               This blocks prerendering because the value is only available at runtime.
+
+               Ways to fix this:
+                 - [stream] Wrap the component in \`<Suspense fallback={...}>\` so the hook value streams in after prerendering
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#wrap-in-or-move-into-suspense
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#allow-blocking-route
                Export encountered an error on /client-use-pathname/[id]/page: /client-use-pathname/[id], exiting the build."
               `)
             }
@@ -544,6 +633,15 @@ describe('Cache Components Errors - Client Components', () => {
                  - Start the app in development mode by running \`next dev\`, then open "/client-use-pathname/[id]" in your browser to investigate the error.
                  - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
                Error occurred prerendering page "/client-use-pathname/[id]". Read more: https://nextjs.org/docs/messages/prerender-error
+               Error: Route "/client-use-pathname/[id]": Next.js encountered URL data \`usePathname()\` in a Client Component outside of \`<Suspense>\`.
+
+               This blocks prerendering because the value is only available at runtime.
+
+               Ways to fix this:
+                 - [stream] Wrap the component in \`<Suspense fallback={...}>\` so the hook value streams in after prerendering
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#wrap-in-or-move-into-suspense
+                 - [block] Set \`export const instant = false\` to allow a blocking route
+                   https://nextjs.org/docs/messages/blocking-prerender-client-hook#allow-blocking-route
                Export encountered an error on /client-use-pathname/[id]/page: /client-use-pathname/[id], exiting the build."
               `)
             }
