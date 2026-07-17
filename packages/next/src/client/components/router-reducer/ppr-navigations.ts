@@ -57,6 +57,7 @@ import {
   updateBFCacheEntryStaleAt,
   computeDynamicStaleAt,
 } from '../segment-cache/bfcache'
+import { urlSearchParamsToParsedUrlQuery } from '../../route-params'
 
 // This is yet another tree type that is used to track pending promises that
 // need to be fulfilled once the dynamic data is received. The terminal nodes of
@@ -1845,7 +1846,6 @@ async function fetchMissingDynamicData(
             staticStageResponse.f,
             buildId,
             staticStageResponse.h,
-            staticStageResponse.r ?? null,
             staleAt,
             dynamicRequestTree,
             result.renderedSearch,
@@ -1874,7 +1874,6 @@ async function fetchMissingDynamicData(
               processed.buildId,
               processed.isResponsePartial,
               processed.headVaryParams,
-              processed.rootVaryParamsIterable,
               processed.staleAt,
               processed.navigationSeed,
               null
