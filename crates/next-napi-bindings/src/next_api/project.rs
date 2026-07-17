@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, Mutex},
     thread,
     time::Duration,
 };
@@ -12,8 +12,8 @@ use bincode::{Decode, Encode};
 use flate2::write::GzEncoder;
 use futures_util::TryFutureExt;
 use napi::{
-    Env, JsFunction, JsObject, Status,
-    bindgen_prelude::{External, within_runtime_if_available},
+    Env, Status, Unknown,
+    bindgen_prelude::{External, FunctionRef, PromiseRaw, within_runtime_if_available},
     threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 use napi_derive::napi;
@@ -410,17 +410,18 @@ impl From<NapiDefineEnv> for DefineEnv {
 pub struct ProjectInstance {
     turbopack_ctx: NextTurbopackContext,
     container: ResolvedVc<ProjectContainer>,
-    exit_receiver: tokio::sync::Mutex<Option<ExitReceiver>>,
+    // Never locked across an await point.
+    exit_receiver: Mutex<Option<ExitReceiver>>,
 }
 
 #[napi(ts_return_type = "Promise<{ __napiType: \"Project\" }>")]
-pub fn project_new(
-    env: Env,
+pub fn project_new<'env>(
+    env: &'env Env,
     options: NapiProjectOptions,
     turbo_engine_options: NapiTurboEngineOptions,
     napi_callbacks: NapiNextTurbopackCallbacksJsObject,
-) -> napi::Result<JsObject> {
-    let napi_callbacks = NapiNextTurbopackCallbacks::from_js(&env, napi_callbacks)?;
+) -> napi::Result<PromiseRaw<'env, External<ProjectInstance>>> {
+    let napi_callbacks = NapiNextTurbopackCallbacks::from_js(env, napi_callbacks)?;
     let (exit, exit_receiver) = ExitHandler::new_receiver();
 
     if let Some(dhat_profiler) = DhatProfilerGuard::try_init() {
@@ -641,7 +642,7 @@ pub fn project_new(
             Ok(External::new(ProjectInstance {
                 turbopack_ctx,
                 container,
-                exit_receiver: tokio::sync::Mutex::new(Some(exit_receiver)),
+                exit_receiver: Mutex::new(Some(exit_receiver)),
             }))
         }
         .instrument(tracing::info_span!("create project")),
@@ -727,13 +728,12 @@ async fn benchmark_file_io(turbo_tasks: &NextTurboTasks, dir: &Path) -> Result<(
 #[tracing::instrument(level = "info", name = "update project", skip_all)]
 #[napi]
 pub async fn project_update(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     options: NapiPartialProjectOptions,
 ) -> napi::Result<()> {
     let ctx = &project.turbopack_ctx;
     let options = options.into();
     let container = project.container;
-
     ctx.turbo_tasks()
         .run(async move { container.update(options).await })
         .or_else(|e| ctx.throw_turbopack_internal_result(&e.into()))
@@ -744,14 +744,13 @@ pub async fn project_update(
 /// is created with filesystem cache enabled.
 #[napi]
 pub async fn project_invalidate_file_system_cache(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
 ) -> napi::Result<()> {
+    let ctx = project.turbopack_ctx.clone();
     tokio::task::spawn_blocking(move || {
-        // TODO: Let the JS caller specify a reason? We need to limit the reasons to ones we know
-        // how to generate a message for on the Rust side of the FFI.
-        project
-            .turbopack_ctx
-            .turbo_tasks()
+        // TODO: Let the JS caller specify a reason? We need to limit the reasons to ones we
+        // know how to generate a message for on the Rust side of the FFI.
+        ctx.turbo_tasks()
             .backend()
             .invalidate_storage(invalidation_reasons::USER_REQUEST)
     })
@@ -766,13 +765,22 @@ pub async fn project_invalidate_file_system_cache(
 /// one.
 #[napi]
 pub async fn project_on_exit(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
-) {
-    project_on_exit_internal(&project).await
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
+) -> napi::Result<()> {
+    run_exit_handlers(&project.exit_receiver).await;
+    Ok(())
 }
 
-async fn project_on_exit_internal(project: &ProjectInstance) {
-    let exit_receiver = project.exit_receiver.lock().await.take();
+/// Takes the [`ExitReceiver`] out of the shared slot and runs the registered exit handlers.
+///
+/// The receiver is taken only once the caller is ready to run the handlers, so an earlier failure
+/// (e.g. a panic in `stop_and_wait` during `project_shutdown`) leaves it in place for a fallback
+/// `project_on_exit` call.
+async fn run_exit_handlers(exit_receiver: &Mutex<Option<ExitReceiver>>) {
+    let exit_receiver = exit_receiver
+        .lock()
+        .expect("panicked while holding the exit receiver")
+        .take();
     exit_receiver
         .expect("`project.onExitSync` must only be called once")
         .run_exit_handler()
@@ -787,13 +795,15 @@ async fn project_on_exit_internal(project: &ProjectInstance) {
 #[tracing::instrument(level = "info", name = "shutdown project", skip_all)]
 #[napi]
 pub async fn project_shutdown(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
-) {
-    project.turbopack_ctx.turbo_tasks().stop_and_wait().await;
-    project_on_exit_internal(&project).await;
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
+) -> napi::Result<()> {
+    let tt = project.turbopack_ctx.turbo_tasks();
+    tt.stop_and_wait().await;
+    run_exit_handlers(&project.exit_receiver).await;
+    Ok(())
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 #[derive(Default)]
 pub struct AppPageNapiRoute {
     /// The relative path from project_path to the route file
@@ -803,7 +813,7 @@ pub struct AppPageNapiRoute {
     pub rsc_hmr_endpoint: Option<External<ExternalEndpoint>>,
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 #[derive(Default)]
 pub struct NapiRoute {
     /// The router path
@@ -886,7 +896,7 @@ impl NapiRoute {
     }
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 pub struct NapiMiddleware {
     pub endpoint: External<ExternalEndpoint>,
     pub is_proxy: bool,
@@ -907,7 +917,7 @@ impl NapiMiddleware {
     }
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 pub struct NapiInstrumentation {
     pub node_js: External<ExternalEndpoint>,
     pub edge: External<ExternalEndpoint>,
@@ -931,7 +941,7 @@ impl NapiInstrumentation {
     }
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 pub struct NapiEntrypoints {
     pub routes: Vec<NapiRoute>,
     pub middleware: Option<NapiMiddleware>,
@@ -1301,9 +1311,9 @@ async fn app_route_filter_for_write_phase(
 }
 
 #[tracing::instrument(level = "info", name = "write all entrypoints to disk", skip_all)]
-#[napi]
+#[napi(ts_return_type = "Promise<TurbopackResult<Partial<NapiEntrypoints>>>")]
 pub async fn project_write_all_entrypoints_to_disk(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     app_dir_only: bool,
 ) -> napi::Result<TurbopackResult<Option<NapiEntrypoints>>> {
     let ctx = &project.turbopack_ctx;
@@ -1517,10 +1527,7 @@ pub async fn project_write_all_entrypoints_to_disk(
 
     Ok(TurbopackResult {
         result: if let Some(entrypoints) = entrypoints {
-            Some(NapiEntrypoints::from_entrypoints_op(
-                &entrypoints,
-                &project.turbopack_ctx,
-            )?)
+            Some(NapiEntrypoints::from_entrypoints_op(&entrypoints, ctx)?)
         } else {
             None
         },
@@ -1691,14 +1698,13 @@ async fn output_assets_operation(
 }
 
 #[tracing::instrument(level = "info", name = "get entrypoints", skip_all)]
-#[napi]
+#[napi(ts_return_type = "Promise<TurbopackResult<Partial<NapiEntrypoints>>>")]
 pub async fn project_entrypoints(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
 ) -> napi::Result<TurbopackResult<Option<NapiEntrypoints>>> {
+    let ctx = project.turbopack_ctx.clone();
     let container = project.container;
-
-    let (entrypoints, issues) = project
-        .turbopack_ctx
+    let (entrypoints, issues) = ctx
         .turbo_tasks()
         .run_once(async move {
             let entrypoints_with_issues_op = get_entrypoints_with_issues_operation(container);
@@ -1718,10 +1724,7 @@ pub async fn project_entrypoints(
         .map_err(|e| napi::Error::from_reason(PrettyPrintError(&e).to_string()))?;
 
     let result = match entrypoints {
-        Some(entrypoints) => Some(NapiEntrypoints::from_entrypoints_op(
-            &entrypoints,
-            &project.turbopack_ctx,
-        )?),
+        Some(entrypoints) => Some(NapiEntrypoints::from_entrypoints_op(&entrypoints, &ctx)?),
         None => None,
     };
 
@@ -1734,14 +1737,19 @@ pub async fn project_entrypoints(
 #[tracing::instrument(level = "info", name = "subscribe to entrypoints", skip_all)]
 #[napi(ts_return_type = "{ __napiType: \"RootTask\" }")]
 pub fn project_entrypoints_subscribe(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
-    func: JsFunction,
+    env: Env,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
+    #[napi(ts_arg_type = "(...args: any[]) => any")] func: FunctionRef<
+        TurbopackResult<Option<NapiEntrypoints>>,
+        (),
+    >,
 ) -> napi::Result<External<RootTask>> {
     let turbopack_ctx = project.turbopack_ctx.clone();
     let container = project.container;
     subscribe(
         turbopack_ctx.clone(),
-        func,
+        &env,
+        &func,
         move || {
             async move {
                 let entrypoints_with_issues_op = get_entrypoints_with_issues_operation(container);
@@ -1769,13 +1777,13 @@ pub fn project_entrypoints_subscribe(
                 None => None,
             };
 
-            Ok(vec![TurbopackResult {
+            Ok(TurbopackResult {
                 result,
                 issues: issues
                     .iter()
                     .map(|issue| NapiIssue::from(&**issue))
                     .collect(),
-            }])
+            })
         },
     )
 }
@@ -1828,13 +1836,17 @@ async fn hmr_update_with_issues_operation(
     .cell())
 }
 
-#[tracing::instrument(level = "info", name = "get HMR events", skip(project, func), fields(target = %target, chunk_name = %chunk_name))]
+#[tracing::instrument(level = "info", name = "get HMR events", skip(env, project, func), fields(target = %target, chunk_name = %chunk_name))]
 #[napi(ts_return_type = "{ __napiType: \"RootTask\" }")]
 pub fn project_hmr_events(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    env: Env,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     chunk_name: RcStr,
     target: String,
-    func: JsFunction,
+    #[napi(ts_arg_type = "(...args: any[]) => any")] func: FunctionRef<
+        TurbopackResult<Unknown<'static>>,
+        (),
+    >,
 ) -> napi::Result<External<RootTask>> {
     let hmr_target = target
         .parse::<HmrTarget>()
@@ -1844,7 +1856,8 @@ pub fn project_hmr_events(
     let session = TransientInstance::new(());
     subscribe(
         project.turbopack_ctx.clone(),
-        func,
+        &env,
+        &func,
         {
             let outer_chunk_name = chunk_name.clone();
             let session = session.clone();
@@ -1915,16 +1928,16 @@ pub fn project_hmr_events(
                 Some(Update::None) => ClientUpdateInstruction::issues(&identifier, &update_issues),
             };
 
-            Ok(vec![TurbopackResult {
+            Ok(TurbopackResult {
                 result: ctx.env.to_js_value(&update)?,
                 issues: napi_issues,
-            }])
+            })
         },
     )
 }
 
-#[napi(object)]
-struct HmrChunkNames {
+#[napi(object, object_from_js = false)]
+pub struct HmrChunkNames {
     pub chunk_names: Vec<RcStr>,
 }
 
@@ -1967,12 +1980,16 @@ async fn get_hmr_chunk_names_with_issues_operation(
     .cell())
 }
 
-#[tracing::instrument(level = "info", name = "get HMR chunk names", skip(project, func), fields(target = %target))]
+#[tracing::instrument(level = "info", name = "get HMR chunk names", skip(env, project, func), fields(target = %target))]
 #[napi(ts_return_type = "{ __napiType: \"RootTask\" }")]
 pub fn project_hmr_chunk_names_subscribe(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    env: Env,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     target: String,
-    func: JsFunction,
+    #[napi(ts_arg_type = "(...args: any[]) => any")] func: FunctionRef<
+        TurbopackResult<HmrChunkNames>,
+        (),
+    >,
 ) -> napi::Result<External<RootTask>> {
     let hmr_target = target
         .parse::<HmrTarget>()
@@ -1981,7 +1998,8 @@ pub fn project_hmr_chunk_names_subscribe(
     let container = project.container;
     subscribe(
         project.turbopack_ctx.clone(),
-        func,
+        &env,
+        &func,
         move || async move {
             let hmr_chunk_names_with_issues_op =
                 get_hmr_chunk_names_with_issues_operation(container, hmr_target);
@@ -2001,7 +2019,7 @@ pub fn project_hmr_chunk_names_subscribe(
         move |ctx| {
             let (chunk_names, issues) = ctx.value;
 
-            Ok(vec![TurbopackResult {
+            Ok(TurbopackResult {
                 result: HmrChunkNames {
                     chunk_names: ReadRef::into_owned(chunk_names),
                 },
@@ -2009,7 +2027,7 @@ pub fn project_hmr_chunk_names_subscribe(
                     .iter()
                     .map(|issue| NapiIssue::from(&**issue))
                     .collect(),
-            }])
+            })
         },
     )
 }
@@ -2019,7 +2037,7 @@ pub enum UpdateMessage {
     End(UpdateInfo),
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 struct NapiUpdateMessage {
     pub update_type: &'static str,
     pub value: Option<NapiUpdateInfo>,
@@ -2040,7 +2058,7 @@ impl From<UpdateMessage> for NapiUpdateMessage {
     }
 }
 
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 struct NapiUpdateInfo {
     pub duration: u32,
     pub tasks: u32,
@@ -2068,95 +2086,122 @@ impl From<UpdateInfo> for NapiUpdateInfo {
 /// The signature of the `func` is `(update_message: UpdateMessage) => void`.
 #[napi]
 pub fn project_update_info_subscribe(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    env: Env,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     aggregation_ms: u32,
-    func: JsFunction,
+    #[napi(ts_arg_type = "(...args: any[]) => any")] func: FunctionRef<Unknown<'static>, ()>,
 ) -> napi::Result<()> {
-    let func: ThreadsafeFunction<UpdateMessage> = func.create_threadsafe_function(0, |ctx| {
-        let message = ctx.value;
-        Ok(vec![NapiUpdateMessage::from(message)])
-    })?;
-    tokio::spawn(async move {
-        let tt = project.turbopack_ctx.turbo_tasks();
-        loop {
-            let update_info = tt
-                .aggregated_update_info(Duration::ZERO, Duration::ZERO)
-                .await;
+    let func: ThreadsafeFunction<UpdateMessage, (), NapiUpdateMessage, Status, true> = func
+        .borrow_back(&env)?
+        .build_threadsafe_function::<UpdateMessage>()
+        .callee_handled::<true>()
+        .build_callback(|ctx| {
+            let message = ctx.value;
+            Ok(NapiUpdateMessage::from(message))
+        })?;
+    let tt = project.turbopack_ctx.turbo_tasks().clone();
+    within_runtime_if_available(|| {
+        tokio::spawn(async move {
+            loop {
+                let update_info = tt
+                    .aggregated_update_info(Duration::ZERO, Duration::ZERO)
+                    .await;
 
-            func.call(
-                Ok(UpdateMessage::Start),
-                ThreadsafeFunctionCallMode::NonBlocking,
-            );
+                func.call(
+                    Ok(UpdateMessage::Start),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
 
-            let update_info = match update_info {
-                Some(update_info) => update_info,
-                None => {
-                    tt.get_or_wait_aggregated_update_info(Duration::from_millis(
-                        aggregation_ms.into(),
-                    ))
-                    .await
+                let update_info = match update_info {
+                    Some(update_info) => update_info,
+                    None => {
+                        tt.get_or_wait_aggregated_update_info(Duration::from_millis(
+                            aggregation_ms.into(),
+                        ))
+                        .await
+                    }
+                };
+
+                let status = func.call(
+                    Ok(UpdateMessage::End(update_info)),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+
+                if !matches!(status, Status::Ok) {
+                    let error = anyhow!("Error calling JS function: {}", status);
+                    eprintln!("{error}");
+                    break;
                 }
-            };
-
-            let status = func.call(
-                Ok(UpdateMessage::End(update_info)),
-                ThreadsafeFunctionCallMode::NonBlocking,
-            );
-
-            if !matches!(status, Status::Ok) {
-                let error = anyhow!("Error calling JS function: {}", status);
-                eprintln!("{error}");
-                break;
             }
-        }
+        });
     });
     Ok(())
+}
+
+#[napi(object, object_from_js = false)]
+struct NapiCompilationEvent {
+    pub type_name: String,
+    pub severity: String,
+    pub message: String,
+    pub event_json: String,
+    #[napi(ts_type = "unknown")]
+    pub event_data: External<Arc<dyn CompilationEvent>>,
+}
+
+impl From<Arc<dyn CompilationEvent>> for NapiCompilationEvent {
+    fn from(event: Arc<dyn CompilationEvent>) -> Self {
+        NapiCompilationEvent {
+            type_name: event.type_name().to_string(),
+            severity: event.severity().to_string(),
+            message: event.message(),
+            event_json: event.to_json(),
+            event_data: External::new(event),
+        }
+    }
 }
 
 /// Subscribes to all compilation events that are not cached like timing and progress information.
 #[napi]
 pub fn project_compilation_events_subscribe(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
-    func: JsFunction,
+    env: Env,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
+    #[napi(ts_arg_type = "(...args: any[]) => any")] func: FunctionRef<Unknown<'static>, ()>,
     event_types: Option<Vec<String>>,
 ) -> napi::Result<()> {
-    let tsfn: ThreadsafeFunction<Arc<dyn CompilationEvent>> =
-        func.create_threadsafe_function(0, |ctx| {
-            let event: Arc<dyn CompilationEvent> = ctx.value;
+    let tsfn: ThreadsafeFunction<
+        Arc<dyn CompilationEvent>,
+        (),
+        NapiCompilationEvent,
+        Status,
+        true,
+    > = func
+        .borrow_back(&env)?
+        .build_threadsafe_function::<Arc<dyn CompilationEvent>>()
+        .callee_handled::<true>()
+        .build_callback(|ctx| Ok(NapiCompilationEvent::from(ctx.value)))?;
 
-            let env = ctx.env;
-            let mut obj = env.create_object()?;
-            obj.set_named_property("typeName", event.type_name())?;
-            obj.set_named_property("severity", event.severity().to_string())?;
-            obj.set_named_property("message", event.message())?;
-            obj.set_named_property("eventJson", event.to_json())?;
+    let tt = project.turbopack_ctx.turbo_tasks().clone();
+    within_runtime_if_available(|| {
+        tokio::spawn(async move {
+            let mut receiver = tt.subscribe_to_compilation_events(event_types);
+            while let Some(msg) = receiver.recv().await {
+                let status = tsfn.call(Ok(msg), ThreadsafeFunctionCallMode::Blocking);
 
-            let external = env.create_external(event, None);
-            obj.set_named_property("eventData", external)?;
-
-            Ok(vec![obj])
-        })?;
-
-    tokio::spawn(async move {
-        let tt = project.turbopack_ctx.turbo_tasks();
-        let mut receiver = tt.subscribe_to_compilation_events(event_types);
-        while let Some(msg) = receiver.recv().await {
-            let status = tsfn.call(Ok(msg), ThreadsafeFunctionCallMode::Blocking);
-
-            if status != Status::Ok {
-                break;
+                if status != Status::Ok {
+                    break;
+                }
             }
-        }
-        // Signal the JS side that the subscription has ended (e.g. after
-        // project shutdown drops all senders).  This allows the async
-        // iterator to exit promptly instead of hanging forever.
-        let _ = tsfn.call(
-            Err(napi::Error::new(
-                Status::Cancelled,
-                "compilation events subscription closed",
-            )),
-            ThreadsafeFunctionCallMode::Blocking,
-        );
+            // Signal the JS side that the subscription has ended (e.g. after
+            // project shutdown drops all senders). This allows the async
+            // iterator to exit promptly instead of hanging forever.
+            let _ = tsfn.call(
+                Err(napi::Error::new(
+                    Status::Cancelled,
+                    "compilation events subscription closed",
+                )),
+                ThreadsafeFunctionCallMode::Blocking,
+            );
+        });
     });
 
     Ok(())
@@ -2345,14 +2390,14 @@ pub async fn project_trace_source_operation(
 }
 
 #[tracing::instrument(level = "info", name = "apply SourceMap to stack frame", skip_all)]
-#[napi]
+#[napi(ts_return_type = "Promise<StackFrame | null>")]
 pub async fn project_trace_source(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     frame: StackFrame,
     current_directory_file_url: String,
 ) -> napi::Result<Option<StackFrame>> {
+    let ctx = project.turbopack_ctx.clone();
     let container = project.container;
-    let ctx = &project.turbopack_ctx;
     ctx.turbo_tasks()
         .run(async move {
             let traced_frame = project_trace_source_operation(
@@ -2364,21 +2409,21 @@ pub async fn project_trace_source(
             .await?;
             Ok(ReadRef::into_owned(traced_frame))
         })
-        // HACK: Don't use `TurbopackInternalError`, this function is race-condition prone (the
-        // source files may have changed or been deleted), so these probably aren't internal errors?
-        // Ideally we should differentiate.
+        // HACK: Don't use `TurbopackInternalError`, this function is race-condition prone
+        // (the source files may have changed or been deleted), so these probably aren't
+        // internal errors? Ideally we should differentiate.
         .await
         .map_err(|e| napi::Error::from_reason(PrettyPrintError(&e.into()).to_string()))
 }
 
 #[tracing::instrument(level = "info", name = "get source content for asset", skip_all)]
-#[napi]
+#[napi(ts_return_type = "Promise<string | null>")]
 pub async fn project_get_source_for_asset(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     file_path: RcStr,
 ) -> napi::Result<Option<String>> {
+    let ctx = project.turbopack_ctx.clone();
     let container = project.container;
-    let ctx = &project.turbopack_ctx;
     ctx.turbo_tasks()
         .run(async move {
             #[turbo_tasks::function(operation, root)]
@@ -2400,21 +2445,18 @@ pub async fn project_get_source_for_asset(
 
             Ok(Some(source_content.content().to_str()?.into_owned()))
         })
-        // HACK: Don't use `TurbopackInternalError`, this function is race-condition prone (the
-        // source files may have changed or been deleted), so these probably aren't internal errors?
-        // Ideally we should differentiate.
+        // HACK: Don't use `TurbopackInternalError`, this function is race-condition prone
+        // (the source files may have changed or been deleted), so these probably aren't
+        // internal errors? Ideally we should differentiate.
         .await
         .map_err(|e| napi::Error::from_reason(PrettyPrintError(&e.into()).to_string()))
 }
 
-#[tracing::instrument(level = "info", name = "get SourceMap for asset", skip_all)]
-#[napi]
-pub async fn project_get_source_map(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+async fn project_get_source_map_inner(
+    ctx: NextTurbopackContext,
+    container: ResolvedVc<ProjectContainer>,
     file_path: RcStr,
 ) -> napi::Result<Option<String>> {
-    let container = project.container;
-    let ctx = &project.turbopack_ctx;
     ctx.turbo_tasks()
         .run(async move {
             let source_map = get_source_map_rope_operation(container, file_path)
@@ -2432,24 +2474,38 @@ pub async fn project_get_source_map(
         .map_err(|e| napi::Error::from_reason(PrettyPrintError(&e.into()).to_string()))
 }
 
-#[napi]
-pub fn project_get_source_map_sync(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+#[tracing::instrument(level = "info", name = "get SourceMap for asset", skip_all)]
+#[napi(ts_return_type = "Promise<string | null>")]
+pub async fn project_get_source_map(
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     file_path: RcStr,
 ) -> napi::Result<Option<String>> {
+    let ctx = project.turbopack_ctx.clone();
+    let container = project.container;
+    project_get_source_map_inner(ctx, container, file_path).await
+}
+
+#[napi]
+pub fn project_get_source_map_sync(
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
+    file_path: RcStr,
+) -> napi::Result<Option<String>> {
+    let ctx = project.turbopack_ctx.clone();
+    let container = project.container;
     within_runtime_if_available(|| {
-        tokio::runtime::Handle::current().block_on(project_get_source_map(project, file_path))
+        tokio::runtime::Handle::current()
+            .block_on(project_get_source_map_inner(ctx, container, file_path))
     })
 }
 
 #[napi]
 pub async fn project_write_analyze_data(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     app_dir_only: bool,
 ) -> napi::Result<TurbopackResult<()>> {
+    let ctx = project.turbopack_ctx.clone();
     let container = project.container;
-    let issues = project
-        .turbopack_ctx
+    let issues = ctx
         .turbo_tasks()
         .run_once(async move {
             let analyze_data_op = write_analyze_data_with_issues_operation(container, app_dir_only);
@@ -2504,11 +2560,11 @@ async fn get_all_compilation_issues_operation(
 #[tracing::instrument(level = "info", name = "get project feature usage", skip_all)]
 #[napi]
 pub async fn project_feature_usage(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
 ) -> napi::Result<Vec<NapiUsedFeature>> {
+    let ctx = project.turbopack_ctx.clone();
     let container = project.container;
-    let summary = project
-        .turbopack_ctx
+    let summary = ctx
         .turbo_tasks()
         .run_once(async move {
             #[turbo_tasks::function(operation, root)]
@@ -2534,11 +2590,11 @@ pub async fn project_feature_usage(
 #[tracing::instrument(level = "info", name = "get all compilation issues", skip_all)]
 #[napi]
 pub async fn project_get_all_compilation_issues(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
 ) -> napi::Result<TurbopackResult<()>> {
+    let ctx = project.turbopack_ctx.clone();
     let container = project.container;
-    let issues = project
-        .turbopack_ctx
+    let issues = ctx
         .turbo_tasks()
         .run_once(async move {
             let op = get_all_compilation_issues_operation(container);
