@@ -409,6 +409,8 @@ export class NextDeployInstance extends NextInstance {
       `VERCEL_CLI_VERSION=${process.env.VERCEL_CLI_VERSION || 'vercel@latest'}`
     )
 
+    additionalEnv.push(`ENABLE_EXPERIMENTAL_COREPACK=1`)
+
     // Add experimental feature flags
 
     if (process.env.__NEXT_CACHE_COMPONENTS) {
