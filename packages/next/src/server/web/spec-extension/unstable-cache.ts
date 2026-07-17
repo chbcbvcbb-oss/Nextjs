@@ -23,6 +23,99 @@ import type {
 
 type Callback = (...args: any[]) => Promise<any>
 
+/**
+ * Non-plain-object constructors whose instances serialize to `{}` or lose
+ * data when passed through `JSON.stringify`. We detect these early so the
+ * developer gets a clear error instead of silent data loss.
+ */
+const NON_SERIALIZABLE_TYPES: [constructor: Function, label: string][] = [
+  [Map, 'Map'],
+  [Set, 'Set'],
+  [RegExp, 'RegExp'],
+  [WeakMap, 'WeakMap'],
+  [WeakSet, 'WeakSet'],
+  // Note: Date is intentionally omitted — JSON.stringify(date) produces a
+  // valid ISO-8601 string, which is a reasonable serialization.
+]
+
+/**
+ * Recursively validates that a value is JSON-serializable.
+ * Detects functions, symbols, BigInt, cyclic references, and non-plain
+ * objects (Map, Set, RegExp, …) and throws with a developer-friendly
+ * message including the path to the offending value.
+ */
+function validateSerializable(value: unknown): void {
+  const seen = new Set<unknown>()
+
+  function walk(current: unknown, path: string): void {
+    if (current === null || current === undefined) {
+      return
+    }
+
+    const type = typeof current
+
+    if (type === 'function') {
+      throw new Error(
+        `unstable_cache callback returned a value with a function at "${path}". ` +
+          `Functions are not JSON serializable.`
+      )
+    }
+
+    if (type === 'symbol') {
+      throw new Error(
+        `unstable_cache callback returned a value with a symbol at "${path}". ` +
+          `Symbols are not JSON serializable.`
+      )
+    }
+
+    if (type === 'bigint') {
+      throw new Error(
+        `unstable_cache callback returned a value with a BigInt at "${path}". ` +
+          `BigInt values are not JSON serializable.`
+      )
+    }
+
+    if (type !== 'object') {
+      // string, number, boolean — all safe
+      return
+    }
+
+    // Detect non-plain objects that silently serialize to `{}`
+    for (const [ctor, label] of NON_SERIALIZABLE_TYPES) {
+      if (current instanceof ctor) {
+        throw new Error(
+          `unstable_cache callback returned a value with a ${label} instance at "${path}". ` +
+            `${label} instances are not JSON serializable.`
+        )
+      }
+    }
+
+    // Cyclic reference check
+    if (seen.has(current)) {
+      throw new Error(
+        `unstable_cache callback returned a value with a circular reference at "${path}". ` +
+          `Circular structures are not JSON serializable.`
+      )
+    }
+
+    seen.add(current)
+
+    if (Array.isArray(current)) {
+      for (let i = 0; i < current.length; i++) {
+        walk(current[i], `${path}[${i}]`)
+      }
+    } else {
+      for (const key of Object.keys(current as Record<string, unknown>)) {
+        walk((current as Record<string, unknown>)[key], `${path}.${key}`)
+      }
+    }
+
+    seen.delete(current)
+  }
+
+  walk(value, '')
+}
+
 let noStoreFetchIdx = 0
 
 async function cacheNewResult<T>(
@@ -34,14 +127,31 @@ async function cacheNewResult<T>(
   fetchIdx: number,
   fetchUrl: string
 ): Promise<unknown> {
+  validateSerializable(result)
+
+  let serializedBody: string
+  try {
+    const json = JSON.stringify(result)
+    if (json === undefined) {
+      // JSON.stringify returns undefined (without throwing) for top-level
+      // undefined, functions, and symbols. validateSerializable already
+      // catches functions and symbols, so this handles the undefined case.
+      throw new Error('value is undefined')
+    }
+    serializedBody = json
+  } catch (err) {
+    throw new Error(
+      `unstable_cache callback returned a value that is not JSON serializable: ${err}`
+    )
+  }
+
   await incrementalCache.set(
     cacheKey,
     {
       kind: CachedRouteKind.FETCH,
       data: {
         headers: {},
-        // TODO: handle non-JSON values?
-        body: JSON.stringify(result),
+        body: serializedBody,
         status: 200,
         url: '',
       } satisfies CachedFetchData,
