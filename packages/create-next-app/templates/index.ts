@@ -97,7 +97,7 @@ export const installTemplate = async ({
   if (bundler === Bundler.Rspack) {
     const nextConfigFile = path.join(
       root,
-      mode === "js" ? "next.config.mjs" : "next.config.ts",
+      mode === "js" ? "next.config.js" : "next.config.ts",
     );
     await fs.writeFile(
       nextConfigFile,
@@ -112,7 +112,7 @@ export const installTemplate = async ({
   if (reactCompiler) {
     const nextConfigFile = path.join(
       root,
-      mode === "js" ? "next.config.mjs" : "next.config.ts",
+      mode === "js" ? "next.config.js" : "next.config.ts",
     );
     let configContent = await fs.readFile(nextConfigFile, "utf8");
 
@@ -237,6 +237,7 @@ export const installTemplate = async ({
     name: appName,
     version: "0.1.0",
     private: true,
+    type: "module",
     scripts: {
       dev: `next dev${bundlerFlags}`,
       build: `next build${bundlerFlags}`,
