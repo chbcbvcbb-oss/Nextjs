@@ -765,6 +765,9 @@ export async function initialize(opts: {
         if (err instanceof DecodeError) {
           invokePath = '/400'
           invokeStatus = '400'
+        } else if (err instanceof NoFallbackError) {
+          invokePath = '/404'
+          invokeStatus = '404'
         } else {
           console.error(err)
         }
