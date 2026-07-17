@@ -85,6 +85,7 @@ import { sendRenderResult } from '../../server/send-payload' with { 'turbopack-t
 import { NoFallbackError } from '../../shared/lib/no-fallback-error.external' with { 'turbopack-transition': 'next-server-utility' }
 import { parseMaxPostponedStateSize } from '../../shared/lib/size-limit' with { 'turbopack-transition': 'next-server-utility' }
 import {
+  decompressBody,
   getMaxPostponedStateSize,
   getPostponedStateExceededErrorMessage,
   readBodyWithSizeLimit,
@@ -363,19 +364,25 @@ export async function handler(
         return null
       }
 
-      if (fullBody.length >= stateLength) {
+      const decompressedFullBody = decompressBody(
+        fullBody,
+        req.headers['content-encoding'],
+        maxTotalBodySize * 5
+      )
+
+      if (decompressedFullBody.length >= stateLength) {
         // Extract postponed state from the beginning
-        const postponedState = fullBody
+        const postponedState = decompressedFullBody
           .subarray(0, stateLength)
           .toString('utf8')
         addRequestMeta(req, 'postponed', postponedState)
 
         // Store the remaining action body for the action handler
-        const actionBody = fullBody.subarray(stateLength)
+        const actionBody = decompressedFullBody.subarray(stateLength)
         addRequestMeta(req, 'actionBody', actionBody)
       } else {
         throw new Error(
-          `invariant: expected ${stateLength} bytes of postponed state but only received ${fullBody.length} bytes`
+          `invariant: expected ${stateLength} bytes of postponed state but only received ${decompressedFullBody.length} bytes`
         )
       }
     }
@@ -400,7 +407,12 @@ export async function handler(
       ctx.waitUntil?.(Promise.resolve())
       return null
     }
-    const postponed = body.toString('utf8')
+    const decompressed = decompressBody(
+      body,
+      req.headers['content-encoding'],
+      maxPostponedStateSizeBytes * 5
+    )
+    const postponed = decompressed.toString('utf8')
 
     addRequestMeta(req, 'postponed', postponed)
   }
