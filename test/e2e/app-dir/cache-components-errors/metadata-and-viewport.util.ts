@@ -50,38 +50,60 @@ export function registerMetadataAndViewportTests(
 
         if (isDebugPrerender) {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-route": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-route": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-route": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             > Export encountered errors on 1 path:
-             	/dynamic-metadata-static-route/page: /dynamic-metadata-static-route"
-            `)
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+
+           > Export encountered errors on 1 path:
+           	/dynamic-metadata-static-route/page: /dynamic-metadata-static-route"
+          `)
         } else {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-route": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-route": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
-             Export encountered an error on /dynamic-metadata-static-route/page: /dynamic-metadata-static-route, exiting the build."
-            `)
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-route": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Export encountered an error on /dynamic-metadata-static-route/page: /dynamic-metadata-static-route, exiting the build."
+          `)
         }
       })
     }
@@ -127,127 +149,171 @@ export function registerMetadataAndViewportTests(
         if (isTurbopack) {
           if (isDebugPrerender) {
             expect(output).toMatchInlineSnapshot(`
-               "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
+             "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
 
-               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
 
-               Ways to fix this:
-                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
-                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
-                 - [block] Set \`export const instant = false\` to allow a blocking route
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
-                   at Dynamic (app/dynamic-metadata-error-route/page.tsx:20:16)
-                   at Page (app/dynamic-metadata-error-route/page.tsx:15:7)
-                 18 | }
-                 19 |
-               > 20 | async function Dynamic() {
-                    |                ^
-                 21 |   await new Promise((r) => setTimeout(r))
-                 22 |   return <p id="dynamic">Dynamic</p>
-                 23 | }
-               To debug the issue, start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
-               Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+                 at Dynamic (app/dynamic-metadata-error-route/page.tsx:20:16)
+                 at Page (app/dynamic-metadata-error-route/page.tsx:15:7)
+               18 | }
+               19 |
+             > 20 | async function Dynamic() {
+                  |                ^
+               21 |   await new Promise((r) => setTimeout(r))
+               22 |   return <p id="dynamic">Dynamic</p>
+               23 | }
+             To debug the issue, start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
+             Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
+             Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
 
-               > Export encountered errors on 1 path:
-               	/dynamic-metadata-error-route/page: /dynamic-metadata-error-route"
-              `)
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+
+             > Export encountered errors on 1 path:
+             	/dynamic-metadata-error-route/page: /dynamic-metadata-error-route"
+            `)
           } else {
             expect(output).toMatchInlineSnapshot(`
-               "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
+             "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
 
-               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
 
-               Ways to fix this:
-                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
-                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
-                 - [block] Set \`export const instant = false\` to allow a blocking route
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
-                   at main (<anonymous>)
-                   at body (<anonymous>)
-                   at html (<anonymous>)
-               To get a more detailed stack trace and pinpoint the issue, try one of the following:
-                 - Start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
-                 - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
-               Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
-               Export encountered an error on /dynamic-metadata-error-route/page: /dynamic-metadata-error-route, exiting the build."
-              `)
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+                 at main (<anonymous>)
+                 at body (<anonymous>)
+                 at html (<anonymous>)
+             To get a more detailed stack trace and pinpoint the issue, try one of the following:
+               - Start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
+               - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
+             Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
+             Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
+
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+             Export encountered an error on /dynamic-metadata-error-route/page: /dynamic-metadata-error-route, exiting the build."
+            `)
           }
         } else {
           if (isDebugPrerender) {
             expect(output).toMatchInlineSnapshot(`
-               "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
+             "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
 
-               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
 
-               Ways to fix this:
-                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
-                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
-                 - [block] Set \`export const instant = false\` to allow a blocking route
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
-                   at Dynamic (webpack:///app/dynamic-metadata-error-route/page.tsx:20:16)
-                   at Page (webpack:///app/dynamic-metadata-error-route/page.tsx:15:7)
-                 18 | }
-                 19 |
-               > 20 | async function Dynamic() {
-                    |                ^
-                 21 |   await new Promise((r) => setTimeout(r))
-                 22 |   return <p id="dynamic">Dynamic</p>
-                 23 | }
-               To debug the issue, start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
-               Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+                 at Dynamic (webpack:///app/dynamic-metadata-error-route/page.tsx:20:16)
+                 at Page (webpack:///app/dynamic-metadata-error-route/page.tsx:15:7)
+               18 | }
+               19 |
+             > 20 | async function Dynamic() {
+                  |                ^
+               21 |   await new Promise((r) => setTimeout(r))
+               22 |   return <p id="dynamic">Dynamic</p>
+               23 | }
+             To debug the issue, start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
+             Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
+             Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
 
-               > Export encountered errors on 1 path:
-               	/dynamic-metadata-error-route/page: /dynamic-metadata-error-route"
-              `)
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+
+             > Export encountered errors on 1 path:
+             	/dynamic-metadata-error-route/page: /dynamic-metadata-error-route"
+            `)
           } else {
             expect(output).toMatchInlineSnapshot(`
-               "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
+             "Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
 
-               \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
 
-               Ways to fix this:
-                 - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
-                 - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
-                 - [block] Set \`export const instant = false\` to allow a blocking route
-                   https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
-                   at a (<next-dist-dir>)
-                   at b (<next-dist-dir>)
-                   at c (<next-dist-dir>)
-                   at d (<next-dist-dir>)
-                   at e (<next-dist-dir>)
-                   at f (<next-dist-dir>)
-                   at g (<next-dist-dir>)
-                   at h (<next-dist-dir>)
-                   at i (<next-dist-dir>)
-                   at j (<next-dist-dir>)
-                   at main (<anonymous>)
-                   at body (<anonymous>)
-                   at html (<anonymous>)
-                   at k (<next-dist-dir>)
-                   at l (<next-dist-dir>)
-                   at m (<next-dist-dir>)
-                   at n (<next-dist-dir>)
-                   at o (<next-dist-dir>)
-                   at p (<next-dist-dir>)
-                   at q (<next-dist-dir>)
-                   at r (<next-dist-dir>)
-                   at s (<next-dist-dir>)
-                   at t (<next-dist-dir>)
-                   at u (<next-dist-dir>)
-               To get a more detailed stack trace and pinpoint the issue, try one of the following:
-                 - Start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
-                 - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
-               Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
-               Export encountered an error on /dynamic-metadata-error-route/page: /dynamic-metadata-error-route, exiting the build."
-              `)
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+                 at a (<next-dist-dir>)
+                 at b (<next-dist-dir>)
+                 at c (<next-dist-dir>)
+                 at d (<next-dist-dir>)
+                 at e (<next-dist-dir>)
+                 at f (<next-dist-dir>)
+                 at g (<next-dist-dir>)
+                 at h (<next-dist-dir>)
+                 at i (<next-dist-dir>)
+                 at j (<next-dist-dir>)
+                 at main (<anonymous>)
+                 at body (<anonymous>)
+                 at html (<anonymous>)
+                 at k (<next-dist-dir>)
+                 at l (<next-dist-dir>)
+                 at m (<next-dist-dir>)
+                 at n (<next-dist-dir>)
+                 at o (<next-dist-dir>)
+                 at p (<next-dist-dir>)
+                 at q (<next-dist-dir>)
+                 at r (<next-dist-dir>)
+                 at s (<next-dist-dir>)
+                 at t (<next-dist-dir>)
+                 at u (<next-dist-dir>)
+             To get a more detailed stack trace and pinpoint the issue, try one of the following:
+               - Start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
+               - Rerun the production build with \`next build --debug-prerender\` to generate better stack traces.
+             Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
+             Error: Route "/dynamic-metadata-error-route": Next.js encountered uncached or runtime data during prerendering.
+
+             \`fetch(...)\`, \`cookies()\`, \`headers()\`, \`params\`, \`searchParams\`, or \`connection()\` accessed outside of \`<Suspense>\` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+             Ways to fix this:
+               - [stream] Provide a placeholder with \`<Suspense fallback={...}>\` around the data access
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+               - [cache] For uncached data (\`fetch\`, database calls): cache the access with \`"use cache"\` (does not apply to \`connection()\`)
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+               - [block] Set \`export const instant = false\` to allow a blocking route
+                 https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+             Export encountered an error on /dynamic-metadata-error-route/page: /dynamic-metadata-error-route, exiting the build."
+            `)
           }
         }
       })
@@ -291,38 +357,60 @@ export function registerMetadataAndViewportTests(
 
         if (isDebugPrerender) {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-with-suspense": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-with-suspense": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-with-suspense". Read more: https://nextjs.org/docs/messages/prerender-error
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-with-suspense". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-with-suspense": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             > Export encountered errors on 1 path:
-             	/dynamic-metadata-static-with-suspense/page: /dynamic-metadata-static-with-suspense"
-            `)
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+
+           > Export encountered errors on 1 path:
+           	/dynamic-metadata-static-with-suspense/page: /dynamic-metadata-static-with-suspense"
+          `)
         } else {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-with-suspense": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-with-suspense": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-with-suspense". Read more: https://nextjs.org/docs/messages/prerender-error
-             Export encountered an error on /dynamic-metadata-static-with-suspense/page: /dynamic-metadata-static-with-suspense, exiting the build."
-            `)
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-with-suspense". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-with-suspense": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Export encountered an error on /dynamic-metadata-static-with-suspense/page: /dynamic-metadata-static-with-suspense, exiting the build."
+          `)
         }
       })
     }
@@ -365,38 +453,60 @@ export function registerMetadataAndViewportTests(
 
         if (isDebugPrerender) {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-with-suspense-above-body": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-with-suspense-above-body": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-with-suspense-above-body". Read more: https://nextjs.org/docs/messages/prerender-error
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-with-suspense-above-body". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-with-suspense-above-body": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             > Export encountered errors on 1 path:
-             	/dynamic-metadata-static-with-suspense-above-body/page: /dynamic-metadata-static-with-suspense-above-body"
-            `)
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+
+           > Export encountered errors on 1 path:
+           	/dynamic-metadata-static-with-suspense-above-body/page: /dynamic-metadata-static-with-suspense-above-body"
+          `)
         } else {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-with-suspense-above-body": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-with-suspense-above-body": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-with-suspense-above-body". Read more: https://nextjs.org/docs/messages/prerender-error
-             Export encountered an error on /dynamic-metadata-static-with-suspense-above-body/page: /dynamic-metadata-static-with-suspense-above-body, exiting the build."
-            `)
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-with-suspense-above-body". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-with-suspense-above-body": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Export encountered an error on /dynamic-metadata-static-with-suspense-above-body/page: /dynamic-metadata-static-with-suspense-above-body, exiting the build."
+          `)
         }
       })
     }
@@ -439,38 +549,60 @@ export function registerMetadataAndViewportTests(
 
         if (isDebugPrerender) {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-with-instant-false": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-with-instant-false": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-with-instant-false". Read more: https://nextjs.org/docs/messages/prerender-error
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-with-instant-false". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-with-instant-false": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             > Export encountered errors on 1 path:
-             	/dynamic-metadata-static-with-instant-false/page: /dynamic-metadata-static-with-instant-false"
-            `)
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+
+           > Export encountered errors on 1 path:
+           	/dynamic-metadata-static-with-instant-false/page: /dynamic-metadata-static-with-instant-false"
+          `)
         } else {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-metadata-static-with-instant-false": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+           "Route "/dynamic-metadata-static-with-instant-false": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
 
-             This route's metadata is blocked, but the rest of its content can be prerendered.
+           This route's metadata is blocked, but the rest of its content can be prerendered.
 
-             Ways to fix this:
-               - [static] Use a static metadata export instead of \`generateMetadata()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
-               - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
-               - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
-                 https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
-             Error occurred prerendering page "/dynamic-metadata-static-with-instant-false". Read more: https://nextjs.org/docs/messages/prerender-error
-             Export encountered an error on /dynamic-metadata-static-with-instant-false/page: /dynamic-metadata-static-with-instant-false, exiting the build."
-            `)
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Error occurred prerendering page "/dynamic-metadata-static-with-instant-false". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-metadata-static-with-instant-false": Next.js encountered uncached or runtime data in \`generateMetadata()\`.
+
+           This route's metadata is blocked, but the rest of its content can be prerendered.
+
+           Ways to fix this:
+             - [static] Use a static metadata export instead of \`generateMetadata()\`
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-runtime#use-static-metadata
+             - [cache] Cache the metadata with \`"use cache"\` in \`generateMetadata()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#cache-the-metadata
+             - [dynamic] Render a marker component that calls \`await connection()\` inside \`<Suspense>\` on the page
+               https://nextjs.org/docs/messages/blocking-prerender-metadata-dynamic#mark-the-route-as-dynamic
+           Export encountered an error on /dynamic-metadata-static-with-instant-false/page: /dynamic-metadata-static-with-instant-false, exiting the build."
+          `)
         }
       })
     }
@@ -538,38 +670,60 @@ export function registerMetadataAndViewportTests(
 
         if (isDebugPrerender) {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-viewport-static-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
+           "Route "/dynamic-viewport-static-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
 
-             This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
 
-             Ways to fix this:
-               - [static] Use a static viewport export instead of \`generateViewport()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
-               - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
-               - [block] Set \`export const instant = false\` to allow a blocking route
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
-             Error occurred prerendering page "/dynamic-viewport-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+           Error occurred prerendering page "/dynamic-viewport-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-viewport-static-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
 
-             > Export encountered errors on 1 path:
-             	/dynamic-viewport-static-route/page: /dynamic-viewport-static-route"
-            `)
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+
+           > Export encountered errors on 1 path:
+           	/dynamic-viewport-static-route/page: /dynamic-viewport-static-route"
+          `)
         } else {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-viewport-static-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
+           "Route "/dynamic-viewport-static-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
 
-             This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
 
-             Ways to fix this:
-               - [static] Use a static viewport export instead of \`generateViewport()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
-               - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
-               - [block] Set \`export const instant = false\` to allow a blocking route
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
-             Error occurred prerendering page "/dynamic-viewport-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
-             Export encountered an error on /dynamic-viewport-static-route/page: /dynamic-viewport-static-route, exiting the build."
-            `)
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+           Error occurred prerendering page "/dynamic-viewport-static-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-viewport-static-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
+
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+           Export encountered an error on /dynamic-viewport-static-route/page: /dynamic-viewport-static-route, exiting the build."
+          `)
         }
       })
     }
@@ -650,38 +804,60 @@ export function registerMetadataAndViewportTests(
 
         if (isDebugPrerender) {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-viewport-dynamic-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
+           "Route "/dynamic-viewport-dynamic-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
 
-             This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
 
-             Ways to fix this:
-               - [static] Use a static viewport export instead of \`generateViewport()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
-               - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
-               - [block] Set \`export const instant = false\` to allow a blocking route
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
-             Error occurred prerendering page "/dynamic-viewport-dynamic-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+           Error occurred prerendering page "/dynamic-viewport-dynamic-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-viewport-dynamic-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
 
-             > Export encountered errors on 1 path:
-             	/dynamic-viewport-dynamic-route/page: /dynamic-viewport-dynamic-route"
-            `)
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+
+           > Export encountered errors on 1 path:
+           	/dynamic-viewport-dynamic-route/page: /dynamic-viewport-dynamic-route"
+          `)
         } else {
           expect(output).toMatchInlineSnapshot(`
-             "Route "/dynamic-viewport-dynamic-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
+           "Route "/dynamic-viewport-dynamic-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
 
-             This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
 
-             Ways to fix this:
-               - [static] Use a static viewport export instead of \`generateViewport()\`
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
-               - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
-               - [block] Set \`export const instant = false\` to allow a blocking route
-                 https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
-             Error occurred prerendering page "/dynamic-viewport-dynamic-route". Read more: https://nextjs.org/docs/messages/prerender-error
-             Export encountered an error on /dynamic-viewport-dynamic-route/page: /dynamic-viewport-dynamic-route, exiting the build."
-            `)
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+           Error occurred prerendering page "/dynamic-viewport-dynamic-route". Read more: https://nextjs.org/docs/messages/prerender-error
+           Error: Route "/dynamic-viewport-dynamic-route": Next.js encountered uncached or runtime data in \`generateViewport()\`.
+
+           This prevents the page from being prerendered, leading to a slower user experience. Unlike metadata, viewport cannot be streamed behind \`<Suspense>\` because it affects the initial page load.
+
+           Ways to fix this:
+             - [static] Use a static viewport export instead of \`generateViewport()\`
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-runtime#use-static-viewport
+             - [cache] For uncached data (\`fetch\`, database calls): cache the viewport with \`"use cache"\` in \`generateViewport()\` (does not apply to \`connection()\`)
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#cache-the-viewport-data
+             - [block] Set \`export const instant = false\` to allow a blocking route
+               https://nextjs.org/docs/messages/blocking-prerender-viewport-dynamic#allow-blocking-route
+           Export encountered an error on /dynamic-viewport-dynamic-route/page: /dynamic-viewport-dynamic-route, exiting the build."
+          `)
         }
       })
     }
