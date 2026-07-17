@@ -465,6 +465,12 @@ export function resolveCssChunkingMode(
   return 'loose'
 }
 
+export type ValidationLevel =
+  | 'warning'
+  | 'manual-warning'
+  | 'experimental-error'
+  | 'experimental-manual-error'
+
 export interface ExperimentalConfig {
   /**
    * A string that is incorporated into content-addressed output filenames
@@ -1480,13 +1486,6 @@ export type ExportPathMap = {
  *
  * Read more: [Next.js Docs: `next.config.js`](https://nextjs.org/docs/app/api-reference/config/next-config-js)
  */
-
-export type ValidationLevel =
-  | 'warning'
-  | 'manual-warning'
-  | 'experimental-error'
-  | 'experimental-manual-error'
-
 export interface NextConfig {
   allowedDevOrigins?: string[]
 
