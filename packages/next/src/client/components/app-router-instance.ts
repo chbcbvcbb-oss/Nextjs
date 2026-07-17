@@ -49,6 +49,7 @@ export type AppRouterActionQueue = {
 
   pending: ActionQueueNode | null
   needsRefresh?: boolean
+  wasPreempted?: boolean
   last: ActionQueueNode | null
 }
 
@@ -86,11 +87,23 @@ function runRemainingActions(
     }
   }
 
-  if (actionQueue.pending === null && actionQueue.needsRefresh) {
-    // The queue is idle; flush the refresh requested by a discarded server
-    // action that revalidated data.
-    actionQueue.needsRefresh = false
-    actionQueue.dispatch({ type: ACTION_REFRESH }, setState)
+  if (actionQueue.pending === null) {
+    if (actionQueue.wasPreempted) {
+      // React renders the state promise from the latest dispatch — the
+      // navigation's, since it jumped ahead of actions that were already
+      // waiting in the queue. Those actions ran after it, so the states they
+      // produced were never rendered. Now that the queue is idle, render the
+      // state we ended up with.
+      actionQueue.wasPreempted = false
+      startTransition(() => setState(actionQueue.state))
+    }
+
+    if (actionQueue.needsRefresh) {
+      // The queue is idle; flush the refresh requested by a discarded server
+      // action that revalidated data.
+      actionQueue.needsRefresh = false
+      actionQueue.dispatch({ type: ACTION_REFRESH }, setState)
+    }
   }
 }
 
@@ -197,6 +210,7 @@ function dispatchAction(
     // Navigations (including back/forward) take priority over any pending actions.
     // Mark the pending action as discarded (so the state is never applied) and start the navigation action immediately.
     actionQueue.pending.discarded = true
+    actionQueue.wasPreempted = true
 
     // The rest of the current queue should still execute after this navigation.
     // (Note that it can't contain any earlier navigations, because we always put those into `actionQueue.pending` by calling `runAction`)
