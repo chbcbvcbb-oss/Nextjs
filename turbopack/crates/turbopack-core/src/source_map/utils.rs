@@ -21,8 +21,9 @@ pub fn add_default_ignore_list(map: &mut swc_sourcemap::SourceMap) {
         if source.starts_with(concatcp!(SOURCE_URL_PROTOCOL_STR, "///[next]"))
             || source.starts_with(concatcp!(SOURCE_URL_PROTOCOL_STR, "///[turbopack]"))
             || source.contains("/node_modules/")
-            || source.ends_with("__nextjs-internal-proxy.cjs")
-            || source.ends_with("__nextjs-internal-proxy.mjs")
+            // The proxy module's ident may carry a trailing part suffix (e.g.
+            // ` <exports>`), so match the base name rather than the extension.
+            || source.contains("__nextjs-internal-proxy.")
         {
             ignored_ids.insert(source_id);
         }
