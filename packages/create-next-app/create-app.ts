@@ -256,6 +256,10 @@ export async function createApp({
       bundler,
       reactCompiler,
     })
+    hasPackageJson = existsSync(packageJsonPath)
+  }
+
+  if (hasPackageJson) {
   }
 
   if (agentsMd) {
