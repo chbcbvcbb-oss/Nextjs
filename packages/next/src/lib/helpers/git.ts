@@ -44,3 +44,32 @@ export function getGitCommit(cwd: string): string | undefined {
     return undefined
   }
 }
+
+/**
+ * Returns true if the working tree has uncommitted changes. Returns undefined
+ * when the dirty status cannot be determined (not a git repo, git not
+ * installed, etc.).
+ */
+export function getGitDirty(cwd: string): boolean | undefined {
+  try {
+    const output = gitExec('status --porcelain', cwd)
+    return output.length > 0
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Returns the first line of the HEAD commit message, or undefined when it
+ * cannot be determined. Prefers VERCEL_GIT_COMMIT_MESSAGE when set.
+ */
+export function getGitMessage(cwd: string): string | undefined {
+  if (process.env.VERCEL_GIT_COMMIT_MESSAGE) {
+    return process.env.VERCEL_GIT_COMMIT_MESSAGE.split('\n')[0].trim()
+  }
+  try {
+    return gitExec('log -1 --pretty=%s', cwd)
+  } catch {
+    return undefined
+  }
+}
