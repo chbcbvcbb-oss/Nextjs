@@ -599,10 +599,44 @@ export function assignStaticShellMetadata(
 }
 
 /**
+ * Builds an example params entry for the invalid-return-value error message,
+ * using the segment's own param name and type when available so the example
+ * matches the user's actual route.
+ */
+function formatExampleParams(
+  segment: Readonly<Pick<AppSegment, 'paramName' | 'paramType'>>
+): string {
+  const paramName = segment.paramName ?? 'slug'
+
+  // Catch-all params (including intercepted variants) are arrays of strings.
+  //
+  // A switch with a default case would read better here, but
+  // @typescript-eslint/switch-exhaustiveness-check would not be
+  // happy, so we use if/else instead.
+  let paramValue: string
+  if (
+    segment.paramType === 'catchall' ||
+    segment.paramType === 'optional-catchall' ||
+    segment.paramType === 'catchall-intercepted-(..)(..)' ||
+    segment.paramType === 'catchall-intercepted-(.)' ||
+    segment.paramType === 'catchall-intercepted-(..)' ||
+    segment.paramType === 'catchall-intercepted-(...)'
+  ) {
+    paramValue = "['...']"
+  } else {
+    paramValue = "'...'"
+  }
+
+  return `[{ ${paramName}: ${paramValue} }]`
+}
+
+/**
  * Calls a single generateStaticParams function within a WorkUnitStore context,
  * making root param getters available during static param generation.
  */
 async function callGenerateStaticParams(
+  page: string,
+  segment: Readonly<Pick<AppSegment, 'paramName' | 'paramType'>>,
   generateStaticParams: NonNullable<AppSegment['generateStaticParams']>,
   parentParams: Params,
   rootParamKeys: readonly string[],
@@ -622,9 +656,23 @@ async function callGenerateStaticParams(
     rootParams,
   }
 
-  return workUnitAsyncStorage.run(workUnitStore, generateStaticParams, {
-    params: parentParams,
-  })
+  const result = await workUnitAsyncStorage.run(
+    workUnitStore,
+    generateStaticParams,
+    { params: parentParams }
+  )
+
+  if (!Array.isArray(result)) {
+    throw new Error(
+      `Invalid value returned from "generateStaticParams" in "${page}". Expected an array of params objects, e.g. ${formatExampleParams(
+        segment
+      )}, received ${
+        result === null ? 'null' : typeof result
+      }. See more info here: https://nextjs.org/docs/app/api-reference/functions/generate-static-params#returns`
+    )
+  }
+
+  return result
 }
 
 /**
@@ -644,7 +692,11 @@ export async function generateRouteStaticParams(
     Readonly<
       Pick<
         AppSegment,
-        'config' | 'generateStaticParams' | 'createEmptyParamsError'
+        | 'config'
+        | 'generateStaticParams'
+        | 'createEmptyParamsError'
+        | 'paramName'
+        | 'paramType'
       >
     >
   >,
@@ -695,6 +747,8 @@ export async function generateRouteStaticParams(
       // Process each parent parameter combination
       for (const parentParams of params) {
         const result = await callGenerateStaticParams(
+          store.page,
+          current,
           current.generateStaticParams,
           parentParams,
           rootParamKeys,
@@ -716,6 +770,8 @@ export async function generateRouteStaticParams(
     } else {
       // No parent params, call generateStaticParams with empty object
       const result = await callGenerateStaticParams(
+        store.page,
+        current,
         current.generateStaticParams,
         {},
         rootParamKeys,
@@ -901,6 +957,19 @@ export async function buildAppStaticPaths({
       hasGenerateStaticParams: generatedParamNames.has(segment.paramName),
     })
   )
+
+  // The pathname params that weren't provided in every generated entry. When
+  // any of these exist, no routes can be prerendered even though
+  // `generateStaticParams` returned a non-empty result, so they're reported
+  // to make error messages accurate (e.g. with `output: export`).
+  const missingRouteParams =
+    routeParams.length > 0
+      ? pathnameRouteParamSegments
+          .filter(({ paramName }) =>
+            routeParams.some((params) => !(paramName in params))
+          )
+          .map(({ paramName }) => paramName)
+      : []
 
   await afterRunner.executeAfter()
 
@@ -1124,5 +1193,5 @@ export async function buildAppStaticPaths({
     assignStaticShellMetadata(prerenderedRoutes, prerenderablePathSegments)
   }
 
-  return { fallbackMode, prerenderedRoutes }
+  return { fallbackMode, prerenderedRoutes, missingRouteParams }
 }
