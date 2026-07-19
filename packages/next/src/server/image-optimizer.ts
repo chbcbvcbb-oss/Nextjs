@@ -7,7 +7,7 @@ import imageSizeOf from 'next/dist/compiled/image-size'
 import { detector } from 'next/dist/compiled/image-detector/detector.js'
 import isAnimated from 'next/dist/compiled/is-animated'
 import { join } from 'path'
-
+import type { SharpConstructor } from 'sharp'
 import { getImageBlurSvg } from '../shared/lib/image-blur-svg'
 import type { ImageConfigComplete } from '../shared/lib/image-config'
 import { hasLocalMatch } from '../shared/lib/match-local-pattern'
@@ -59,7 +59,7 @@ const BYPASS_TYPES = [SVG, ICO, ICNS, BMP, JXL, HEIC]
 const BLUR_IMG_SIZE = 8 // should match `next-image-loader`
 const BLUR_QUALITY = 70 // should match `next-image-loader`
 
-let _sharp: typeof import('sharp')
+let _sharp: SharpConstructor
 
 async function initCacheEntries(
   cacheDir: string
@@ -92,7 +92,8 @@ export function getSharp(
     return _sharp
   }
   try {
-    _sharp = require('sharp') as typeof import('sharp')
+    // eslint-disable-next-line @next/internal/typechecked-require -- sharp is an optional peer dependency loaded lazily at runtime
+    _sharp = require('sharp') as SharpConstructor
     if (typeof operationCache === 'boolean') {
       _sharp.cache(operationCache)
     }
@@ -308,28 +309,25 @@ export async function detectContentType(
     return JP2
   }
 
-  let format:
-    | import('sharp').Metadata['format']
-    | ReturnType<typeof detector>
-    | undefined
-  format = detector(buffer)
+  const format = detector(buffer)
 
   if (!format && !skipMetadata) {
     const sharp = getSharp(concurrency, operationCache)
     const meta = await sharp(buffer)
       .metadata()
       .catch((_) => null)
-    format = meta?.format
+
+    const t = meta?.mediaType
+    if (t && [AVIF, WEBP, JPEG, PNG, GIF, SVG, TIFF].includes(t)) {
+      return t
+    }
   }
 
   switch (format) {
-    case 'avif':
-      return AVIF
     case 'webp':
       return WEBP
     case 'png':
       return PNG
-    case 'jpeg':
     case 'jpg':
       return JPEG
     case 'gif':
@@ -342,28 +340,14 @@ export async function detectContentType(
     case 'jp2':
       return JP2
     case 'tiff':
-    case 'tif':
       return TIFF
-    case 'pdf':
-      return PDF
     case 'bmp':
       return BMP
     case 'ico':
       return ICO
     case 'icns':
       return ICNS
-    case 'dcraw':
-    case 'dz':
-    case 'exr':
-    case 'fits':
     case 'heif':
-    case 'input':
-    case 'magick':
-    case 'openslide':
-    case 'ppm':
-    case 'rad':
-    case 'raw':
-    case 'v':
     case 'cur':
     case 'dds':
     case 'j2c':
@@ -372,8 +356,10 @@ export async function detectContentType(
     case 'psd':
     case 'tga':
     case undefined:
+      return null // unsupported formats
     default:
-      return null
+      format satisfies never // exhaustive check
+      return null // impossible to reach
   }
 }
 
@@ -849,7 +835,10 @@ export async function optimizeImage({
 
   if (contentType === AVIF) {
     transformer.avif({
-      quality: Math.max(quality - 20, 1),
+      // Scale the quality to try and match webp. This ratio was derived
+      // from sharp's default 80 (webp) and 50 (avif), and then verified
+      // using DSSIM visual quality tests.
+      quality: Math.max(Math.round(quality * (50 / 80)), 1),
       effort: 3,
     })
   } else if (contentType === WEBP) {
