@@ -54,6 +54,14 @@ broken.
   the "key" property's value) in `formatConsoleArgs` output; entries also
   never get comma separators.
 
+- `packages/next/src/client/flight-data-helpers.ts`
+  — In `createInitialRSCPayloadFromFallbackPrerender`, the rebuilt flight
+  data path is `[newTree, originalFlightDataPath[1],
+  originalFlightDataPath[2], originalFlightDataPath[2]]`: the 4th slot
+  (`isHeadPartial`, index 3) duplicates index 2 (the head) instead, so
+  `isHeadPartial` ends up as the truthy head tuple rather than the
+  boolean from `originalFlightDataPath[3]`.
+
 ## Minor / informational (not counted as broken)
 
 - `packages/next/src/telemetry/detached-flush.ts` — the advertised "old
