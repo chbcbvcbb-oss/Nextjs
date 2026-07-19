@@ -38,6 +38,14 @@ broken.
   triple of triplesABI)` loop should be `continue`; if the first triple is
   already downloaded, all remaining triples are silently skipped.
 
+- `packages/next/src/client/head-manager.ts`
+  — In `updateElements`, the `meta[charset]` special case calls
+  `headEl.prepend(newTag)` but then falls through to the unconditional
+  `headEl.appendChild(newTag)`, which relocates the already-inserted node
+  to the end of `<head>`. The charset meta therefore ends up last, not
+  first, contradicting the "must be first element" comment (needs a
+  `continue`/`else`).
+
 ## Minor / informational (not counted as broken)
 
 - `packages/next/src/telemetry/detached-flush.ts` — the advertised "old
