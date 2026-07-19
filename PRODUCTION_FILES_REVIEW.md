@@ -92,7 +92,24 @@ broken.
   `inline-static-env.ts`, `mkcert.ts`, `patch-incorrect-lockfile.ts`,
   `recursive-readdir.ts`, typescript/* , metadata generate/resolvers.
 - [x] `packages/next/src/experimental/` (22 files) — clean.
-- [ ] `packages/next/src/client/` (119 files) — next up
+- [~] `packages/next/src/client/` (~119 files) — IN PROGRESS. Broken
+  found so far: `head-manager.ts`, `lib/console.ts`. All small/medium
+  files (≤ ~250 lines) reviewed clean, plus these large ones: lru.ts,
+  page-bootstrap.ts, use-intersection.tsx, resolve-href.ts,
+  error-styles.tsx, error-boundary.tsx, turbopack-hot-reloader-common.ts,
+  compute-changed-path.ts, form.tsx, form-shared.tsx,
+  navigation-devtools.ts, http-access-fallback/error-boundary.tsx,
+  navigate-reducer.ts, router.ts, page-loader.ts, route-params.ts.
+  STILL TO REVIEW in client/: router-reducer-types.ts (types),
+  dev/hot-reloader/app/web-socket.ts, segment-cache/vary-path.ts,
+  components/navigation.ts, flight-data-helpers.ts, components/links.ts,
+  app-index.tsx, script.tsx, components/app-router-instance.ts,
+  image-component.tsx, route-loader.ts, segment-cache/cache-map.ts,
+  server-action-reducer.ts, fetch-server-response.ts,
+  hot-reloader-pages.ts, hot-reloader-app.tsx, components/app-router.tsx,
+  link.tsx, segment-cache/navigation.ts, components/layout-router.tsx,
+  app-dir/link.tsx, index.tsx, legacy/image.tsx, ppr-navigations.ts,
+  segment-cache/scheduler.ts, segment-cache/cache.ts.
 - [ ] `packages/next/src/shared/` (138 files)
 - [ ] `packages/next/src/server/` (388 files)
 - [ ] `packages/next/src/build/` (213 files)
