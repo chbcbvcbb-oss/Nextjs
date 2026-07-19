@@ -46,6 +46,14 @@ broken.
   first, contradicting the "must be first element" comment (needs a
   `continue`/`else`).
 
+- `packages/next/src/client/lib/console.ts`
+  — In `formatObject`, the plain-object branch calls
+  `Object.getOwnPropertyDescriptor(arg, 'key')` with the string literal
+  `'key'` instead of the loop variable `key`. Every iteration reads the
+  property literally named "key", so objects format as `{}` (or repeat
+  the "key" property's value) in `formatConsoleArgs` output; entries also
+  never get comma separators.
+
 ## Minor / informational (not counted as broken)
 
 - `packages/next/src/telemetry/detached-flush.ts` — the advertised "old
