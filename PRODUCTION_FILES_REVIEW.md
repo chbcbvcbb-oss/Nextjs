@@ -112,10 +112,12 @@ broken.
   above), links.ts, navigation.ts, dev/hot-reloader/app/web-socket.ts,
   app-router-instance.ts, route-loader.ts, script.tsx,
   image-component.tsx, fetch-server-response.ts, segment-cache/cache-map.ts.
+  Also clean: server-action-reducer.ts, app-index.tsx, app-router.tsx,
+  layout-router.tsx.
   STILL TO REVIEW in client/: router-reducer-types.ts (types),
-  app-index.tsx, server-action-reducer.ts, hot-reloader-pages.ts,
-  hot-reloader-app.tsx, components/app-router.tsx, link.tsx,
-  segment-cache/navigation.ts, components/layout-router.tsx,
+  hot-reloader-pages.ts,
+  hot-reloader-app.tsx, link.tsx,
+  segment-cache/navigation.ts,
   app-dir/link.tsx, index.tsx, legacy/image.tsx, ppr-navigations.ts,
   segment-cache/scheduler.ts, segment-cache/cache.ts.
 - [ ] `packages/next/src/shared/` (138 files)
