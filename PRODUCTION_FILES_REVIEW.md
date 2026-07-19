@@ -28,6 +28,16 @@ broken.
   leaving a dangling timer per page (up to `staticPageGenerationTimeout`
   seconds each).
 
+- `packages/next/src/lib/download-swc.ts`
+  — Two bugs: (1) the cache-prune loop is
+  `for (let i = 0; i++; i < cacheFiles.length - MAX_VERSIONS_TO_CACHE)` —
+  the condition and increment clauses are swapped, so the condition `i++`
+  evaluates to 0 (falsy) on first check and the prune loop never executes;
+  the swc binary cache grows without bound. (2) In `downloadNativeNextSwc`,
+  `if (fs.existsSync(outputDirectory)) return` inside the `for (const
+  triple of triplesABI)` loop should be `continue`; if the first triple is
+  already downloaded, all remaining triples are silently skipped.
+
 ## Minor / informational (not counted as broken)
 
 - `packages/next/src/telemetry/detached-flush.ts` — the advertised "old
@@ -38,6 +48,18 @@ broken.
 - `packages/next/src/trace/report/to-json-build.ts` — duplicates the
   entire `RotatingWriteStream` class from `to-json.ts`, including a dead
   dev-phase size-limit branch (this file only runs in production builds).
+- `packages/next/src/lib/get-files-in-dir.ts` — a broken symlink in the
+  scanned directory makes `fs.stat` throw ENOENT and the whole listing
+  fails instead of skipping the entry.
+- `packages/next/src/lib/helpers/get-cache-directory.ts` — on an
+  unsupported platform with no usable cache dir it calls
+  `process.exit(0)` (success exit code) after logging an error.
+- `packages/next/src/lib/typescript/runTypeCheck.ts` — always returns
+  `hasWarnings: true` even when the warnings array is empty.
+- `packages/next/src/lib/memory/trace.ts` — heap snapshot filename uses
+  `description.replace(' ', '-')` which only replaces the first space
+  (filenames keep remaining spaces); `distDir` from traceGlobals may be
+  undefined at call time, which would throw in `join()`.
 
 ## Coverage log (directories completed)
 
