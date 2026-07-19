@@ -75,8 +75,8 @@ broken.
   expects same-layer layout templates NOT to apply), `worker.ts`,
   `inline-static-env.ts`, `mkcert.ts`, `patch-incorrect-lockfile.ts`,
   `recursive-readdir.ts`, typescript/* , metadata generate/resolvers.
-- [ ] `packages/next/src/experimental/` (22 files) — next up
-- [ ] `packages/next/src/client/` (119 files)
+- [x] `packages/next/src/experimental/` (22 files) — clean.
+- [ ] `packages/next/src/client/` (119 files) — next up
 - [ ] `packages/next/src/shared/` (138 files)
 - [ ] `packages/next/src/server/` (388 files)
 - [ ] `packages/next/src/build/` (213 files)
