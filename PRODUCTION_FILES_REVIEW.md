@@ -67,8 +67,15 @@ broken.
 - [x] `packages/next/src/export/` (12 files)
 - [x] `packages/next/src/trace/` (10 files)
 - [x] `packages/next/src/telemetry/` (16 files)
-- [ ] `packages/next/src/lib/` (51 files) — next up
-- [ ] `packages/next/src/experimental/` (22 files)
+- [x] `packages/next/src/lib/` (124 files incl. subdirs; type-only files
+  skimmed). Broken: `download-swc.ts`. Checked and clean (notable):
+  `load-custom-routes.ts`, `resolve-metadata.ts` (the
+  `i < metadataItems.length - 2` title-template condition is correct —
+  confirmed against `test/e2e/app-dir/metadata/metadata.test.ts` which
+  expects same-layer layout templates NOT to apply), `worker.ts`,
+  `inline-static-env.ts`, `mkcert.ts`, `patch-incorrect-lockfile.ts`,
+  `recursive-readdir.ts`, typescript/* , metadata generate/resolvers.
+- [ ] `packages/next/src/experimental/` (22 files) — next up
 - [ ] `packages/next/src/client/` (119 files)
 - [ ] `packages/next/src/shared/` (138 files)
 - [ ] `packages/next/src/server/` (388 files)
