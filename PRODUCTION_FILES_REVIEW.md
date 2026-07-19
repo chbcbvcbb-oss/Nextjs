@@ -114,11 +114,10 @@ broken.
   image-component.tsx, fetch-server-response.ts, segment-cache/cache-map.ts.
   Also clean: server-action-reducer.ts, app-index.tsx, app-router.tsx,
   layout-router.tsx.
+  Also clean: link.tsx, app-dir/link.tsx, index.tsx, legacy/image.tsx.
   STILL TO REVIEW in client/: router-reducer-types.ts (types),
-  hot-reloader-pages.ts,
-  hot-reloader-app.tsx, link.tsx,
-  segment-cache/navigation.ts,
-  app-dir/link.tsx, index.tsx, legacy/image.tsx, ppr-navigations.ts,
+  hot-reloader-pages.ts, hot-reloader-app.tsx,
+  segment-cache/navigation.ts, ppr-navigations.ts,
   segment-cache/scheduler.ts, segment-cache/cache.ts.
 - [ ] `packages/next/src/shared/` (138 files)
 - [ ] `packages/next/src/server/` (388 files)
