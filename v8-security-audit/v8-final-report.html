@@ -1,0 +1,501 @@
+<title>V8 15.2.107 Security Audit — Final Report</title>
+<style>
+  :root {
+    --bg: #f8f9fb;
+    --bg-card: #ffffff;
+    --bg-code: #f1f3f7;
+    --text: #1a1f36;
+    --text-secondary: #4a5068;
+    --border: #d8dce6;
+    --accent: #3b5bdb;
+    --red: #c92a2a;
+    --red-bg: #fff5f5;
+    --red-border: #ffc9c9;
+    --amber: #e67700;
+    --amber-bg: #fff9db;
+    --amber-border: #ffe066;
+    --green: #2b8a3e;
+    --green-bg: #ebfbee;
+    --green-border: #b2f2bb;
+    --navy: #1a1f36;
+    --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    --sans: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1119;
+      --bg-card: #181b28;
+      --bg-code: #1e2233;
+      --text: #e1e4ed;
+      --text-secondary: #8b90a5;
+      --border: #2a2e3f;
+      --accent: #5c7cfa;
+      --red: #ff6b6b;
+      --red-bg: #2a1215;
+      --red-border: #5c1a1a;
+      --amber: #ffd43b;
+      --amber-bg: #2a2412;
+      --amber-border: #5c4a1a;
+      --green: #69db7c;
+      --green-bg: #122a15;
+      --green-border: #1a5c2a;
+      --navy: #e1e4ed;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1119;
+    --bg-card: #181b28;
+    --bg-code: #1e2233;
+    --text: #e1e4ed;
+    --text-secondary: #8b90a5;
+    --border: #2a2e3f;
+    --accent: #5c7cfa;
+    --red: #ff6b6b;
+    --red-bg: #2a1215;
+    --red-border: #5c1a1a;
+    --amber: #ffd43b;
+    --amber-bg: #2a2412;
+    --amber-border: #5c4a1a;
+    --green: #69db7c;
+    --green-bg: #122a15;
+    --green-border: #1a5c2a;
+    --navy: #e1e4ed;
+  }
+  :root[data-theme="light"] {
+    --bg: #f8f9fb;
+    --bg-card: #ffffff;
+    --bg-code: #f1f3f7;
+    --text: #1a1f36;
+    --text-secondary: #4a5068;
+    --border: #d8dce6;
+    --accent: #3b5bdb;
+    --red: #c92a2a;
+    --red-bg: #fff5f5;
+    --red-border: #ffc9c9;
+    --amber: #e67700;
+    --amber-bg: #fff9db;
+    --amber-border: #ffe066;
+    --green: #2b8a3e;
+    --green-bg: #ebfbee;
+    --green-border: #b2f2bb;
+    --navy: #1a1f36;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+  }
+  .container { max-width: 860px; margin: 0 auto; }
+
+  .header {
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--navy);
+  }
+  .header .meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.35rem;
+    font-family: var(--mono);
+  }
+
+  .verdict-box {
+    background: var(--bg-card);
+    border: 2px solid var(--green-border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .verdict-box .label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+  }
+  .verdict-box .verdict {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--green);
+  }
+  .verdict-box .detail {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+    line-height: 1.5;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 2rem;
+  }
+  .stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .stat .num {
+    font-size: 1.75rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+  }
+  .stat .num.red { color: var(--red); }
+  .stat .num.green { color: var(--green); }
+  .stat .num.amber { color: var(--amber); }
+  .stat .desc {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.2rem;
+  }
+
+  h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 2rem 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 1.25rem 0 0.5rem;
+  }
+  p, li {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+  ul { padding-left: 1.25rem; margin: 0.5rem 0; }
+  li { margin-bottom: 0.25rem; }
+  strong { color: var(--text); }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.15em 0.5em;
+    border-radius: 3px;
+    vertical-align: middle;
+  }
+  .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+  .badge-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
+  .badge-green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+
+  .finding {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+  }
+  .finding .title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .finding .loc {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+  }
+  .finding .desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.4rem;
+    line-height: 1.5;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    background: var(--bg-code);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+
+  .table-wrap { overflow-x: auto; margin: 0.75rem 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: var(--bg-code);
+  }
+  td { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+  .defense-list {
+    background: var(--green-bg);
+    border: 1px solid var(--green-border);
+    border-radius: 6px;
+    padding: 1rem 1rem 1rem 1.5rem;
+    margin: 1rem 0;
+  }
+  .defense-list li {
+    color: var(--green);
+    font-size: 0.82rem;
+  }
+
+  .section-note {
+    background: var(--bg-code);
+    border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    border-radius: 0 4px 4px 0;
+  }
+
+  details { margin-bottom: 0.5rem; }
+  details summary {
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding: 0.3rem 0;
+  }
+  details summary:hover { text-decoration: underline; }
+  details[open] summary { margin-bottom: 0.5rem; }
+</style>
+
+<div class="container">
+  <div class="header">
+    <h1>V8 15.2.107 Security Audit Report</h1>
+    <div class="meta">Release binary &middot; ~/.jsvu/bin/v8 &middot; Audit date: 2026-07-22</div>
+  </div>
+
+  <div class="verdict-box">
+    <div class="label">Final Verdict</div>
+    <div class="verdict">No exploitable vulnerability verified against the release binary.</div>
+    <div class="detail">
+      80+ distinct exploit attempts across JIT compilation, TypedArray builtins, ResizableArrayBuffer,
+      WebAssembly memory, Float16Array, iterator helpers, and callback-during-operation patterns were
+      all caught by V8's layered defenses. 47 code-level findings were identified (including disabled
+      verification and DCHECK-only guards), but none could be triggered as exploitable from JavaScript
+      without chaining with an undiscovered compiler bug.
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="num">80+</div><div class="desc">Exploit attempts run</div></div>
+    <div class="stat"><div class="num green">0</div><div class="desc">Exploitable in release</div></div>
+    <div class="stat"><div class="num amber">47</div><div class="desc">Code-level findings</div></div>
+    <div class="stat"><div class="num red">1</div><div class="desc">Spec violation (non-security)</div></div>
+  </div>
+
+  <h2>Attack Surfaces Tested</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Category</th><th>Tests</th><th>Status</th></tr>
+      <tr><td>TypedArray builtins + ArrayBuffer.transfer()</td><td>18</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+      <tr><td>TypedArray + ResizableArrayBuffer resize in valueOf</td><td>14</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+      <tr><td>Wasm Memory.grow() + TypedArray detach</td><td>10</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+      <tr><td>JIT type feedback pollution (TurboFan + Maglev)</td><td>12</td><td><span class="badge badge-green">All deopt'd</span></td></tr>
+      <tr><td>Float16Array (newest typed array)</td><td>10</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+      <tr><td>Iterator helpers, Set methods, groupBy</td><td>6</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+      <tr><td>Proxy/Reflect traps + JIT</td><td>4</td><td><span class="badge badge-green">All deopt'd</span></td></tr>
+      <tr><td>SharedArrayBuffer type punning + Workers</td><td>3</td><td><span class="badge badge-green">No confusion</span></td></tr>
+      <tr><td>Error.prepareStackTrace + JIT</td><td>1</td><td><span class="badge badge-green">Deopt'd</span></td></tr>
+      <tr><td>DisposableStack, Symbol.dispose</td><td>2</td><td><span class="badge badge-green">Safe</span></td></tr>
+    </table>
+  </div>
+
+  <h2>V8's Defense Layers (Why Exploits Failed)</h2>
+  <div class="defense-list">
+    <ul>
+      <li><strong>Deoptimization framework</strong> &mdash; JIT-compiled code deoptimizes to interpreter when type assumptions are violated. Caught all type feedback pollution attempts.</li>
+      <li><strong>EnsureValidAndReadLength</strong> &mdash; Re-validates TypedArray buffer attachment after every valueOf/ToNumber call. Caught all transfer() and Wasm grow() detachment attempts in <code>with()</code>, <code>slice()</code>, <code>fill()</code>.</li>
+      <li><strong>LoadJSTypedArrayLengthAndValidate</strong> &mdash; Re-reads length from live buffer state. Used in <code>slice()</code>, <code>sort()</code> writeback, and other builtins.</li>
+      <li><strong>AttachedJSTypedArrayWitness.RecheckIndex</strong> &mdash; Per-iteration re-validation for callback-based builtins (<code>every</code>, <code>some</code>, <code>forEach</code>, <code>filter</code>, <code>map</code>, <code>find</code>, <code>reduce</code>).</li>
+      <li><strong>IncludesValueImpl defense-in-depth</strong> &mdash; Inner re-check via <code>GetLengthOrOutOfBounds()</code> at elements.cc:3857, catches stale length even when outer builtin misses it.</li>
+      <li><strong>TypedArray.sort temp buffer</strong> &mdash; Copies data to FixedArray before sorting. Comparator-detach doesn't cause UAF.</li>
+      <li><strong>RAB backing store zeroing</strong> &mdash; On resize-down, bytes between new and old length are zeroed within the same allocation (sized for maxByteLength). Prevents heap data leaks through stale-length results.</li>
+      <li><strong>DataView bounds re-check</strong> &mdash; <code>getFloat16</code>/<code>setFloat16</code> and all DataView methods re-validate offset after valueOf conversion.</li>
+    </ul>
+  </div>
+
+  <h2>Confirmed Spec Violation (Non-Security)</h2>
+  <div class="finding">
+    <div class="title"><span class="badge badge-amber">Spec Violation</span> <code>TypedArray.includes(undefined)</code> returns <code>true</code> on detached buffer</div>
+    <div class="loc">builtins-typed-array.cc:247 → elements.cc:3857</div>
+    <div class="desc">
+      When a TypedArray's buffer is detached via <code>transfer()</code> in the <code>fromIndex</code> valueOf,
+      <code>includes(undefined)</code> returns <code>true</code> instead of throwing TypeError. The internal
+      <code>IncludesValueImpl</code> at elements.cc:3863 has special handling: when the buffer is out-of-bounds
+      and the search value is <code>undefined</code>, it returns <code>true</code> (treating OOB elements as
+      <code>undefined</code>). This is a spec deviation &mdash; the spec requires TypeError for detached buffers
+      &mdash; but it does <strong>not</strong> access freed memory and is not a security vulnerability.
+    </div>
+  </div>
+
+  <h2>Stale-Length Behavior (Spec-Compliant, Not Exploitable)</h2>
+  <div class="finding">
+    <div class="title"><span class="badge badge-green">Safe</span> <code>TypedArray.with()</code> and <code>slice()</code> return results with original (pre-resize) length</div>
+    <div class="loc">typed-array-with.tq:57 &middot; typed-array-slice.tq:107</div>
+    <div class="desc">
+      When an RAB is resized during valueOf, these methods create a result array using the original length
+      (e.g., 256 elements from a now-32-byte buffer). The copy step correctly uses
+      <code>UintPtrMin(originalLength, currentLength)</code>, only copying valid data. Remaining elements are
+      filled with zeros (Uint8/Uint32) or NaN (Float64/Float16). The RAB backing store is allocated for
+      <code>maxByteLength</code> and zeroed on shrink, so <strong>no heap data leaks through the extra
+      elements</strong>. This behavior is spec-compliant (the spec captures length before valueOf).
+    </div>
+  </div>
+
+  <h2>Highest-Risk Code Findings (F-34 through F-47)</h2>
+  <p style="margin-bottom: 0.75rem;">Findings from automated source-level audit of Turboshaft, Maglev, and runtime code. These represent structural weaknesses that could become exploitable if combined with an undiscovered compiler bug, but none are directly triggerable from JavaScript.</p>
+
+  <div class="finding">
+    <div class="title"><span class="badge badge-red">High Risk</span> F-34: Turboshaft type verification completely disabled</div>
+    <div class="loc">type-inference-reducer.h:504 — <code>#if 0</code> wraps Verify()</div>
+    <div class="desc">The method that checks <code>output_type.IsSubtypeOf(input_type)</code> is wrapped in <code>#if 0</code>, meaning it never compiles in any build. If any Turboshaft reducer assigns a wrong type, the <code>TypedOptimizationsReducer</code> trusts it unconditionally. No runtime enforcement of type soundness exists across the Turboshaft pipeline.</div>
+  </div>
+
+  <div class="finding">
+    <div class="title"><span class="badge badge-red">High Risk</span> F-38: Fast API call argument count — DCHECK only</div>
+    <div class="loc">fast-api-call-lowering-reducer.h:39</div>
+    <div class="desc"><code>DCHECK_EQ(c_arg_count, arguments.size())</code> — in release builds, a mismatch between C signature arg count and IR argument count would cause OOB read from the arguments vector during lowering. Requires a separate compiler bug to trigger the mismatch.</div>
+  </div>
+
+  <div class="finding">
+    <div class="title"><span class="badge badge-red">High Risk</span> F-39: ObjectIs kInternalizedString HeapObject assumption — DCHECK only</div>
+    <div class="loc">machine-lowering-reducer-inl.h:645</div>
+    <div class="desc">Loads map from input without Smi check in release. If a compiler bug omits the prior Smi guard, a Smi value would be dereferenced as a pointer address. Requires another bug to skip the Smi check insertion.</div>
+  </div>
+
+  <div class="finding">
+    <div class="title"><span class="badge badge-amber">Medium</span> F-37: Late load elimination non-aliasing validation — DEBUG only</div>
+    <div class="loc">late-load-elimination-reducer.cc:610-624</div>
+    <div class="desc">Validation that non-aliasing objects only flow into Smi-check WordBinop is <code>#ifdef DEBUG</code>. In release, a non-Smi-check word binop on a fresh allocation could cause stale field values to persist through load elimination.</div>
+  </div>
+
+  <div class="finding">
+    <div class="title"><span class="badge badge-amber">Medium</span> F-40: Runtime_StringReplaceNonGlobalRegExpWithFunction — DCHECK-only guards</div>
+    <div class="loc">runtime-regexp.cc:1609-1610</div>
+    <div class="desc"><code>IsUnmodifiedRegExp</code> and <code>is_callable</code> checks are DCHECK-only. The fast path for string replace trusts that callers validated these conditions. A stale dispatch could bypass these checks in release.</div>
+  </div>
+
+  <div class="finding">
+    <div class="title"><span class="badge badge-amber">Medium</span> F-41: UnsafeCast&lt;ArrayList&gt; in groupBy — no runtime type check</div>
+    <div class="loc">map-groupby.tq:25 &middot; object-groupby.tq:198</div>
+    <div class="desc">Torque <code>UnsafeCast&lt;ArrayList&gt;</code> performs no type check in any build. If <code>AddValueToKeyedGroup</code> has a bug storing a non-ArrayList, the cast interprets arbitrary data as ArrayList fields.</div>
+  </div>
+
+  <details>
+    <summary>Show all 14 Turboshaft/Maglev/Runtime findings (F-34 through F-47)</summary>
+    <div class="finding">
+      <div class="title">F-35: Float type widening immediately returns Any()</div>
+      <div class="loc">type-inference-analysis.h:524-529</div>
+      <div class="desc">Loop phi floats widen to <code>Float64Type::Any()</code> immediately. Conservative (no misoptimization), but prevents float range analysis.</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-36: Fallback TypeForRepresentation for untyped operations</div>
+      <div class="loc">type-inference-analysis.h:229-237</div>
+      <div class="desc">Unsupported operations get maximal type for their representation. Prevents dead-code elimination via None propagation.</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-42: Object.groupBy SlowArrayContinuation re-reads length</div>
+      <div class="loc">object-groupby.tq:144</div>
+      <div class="desc">Re-reads <code>stableArray.length</code> each iteration in slow path. <code>GetProperty</code> is generic/safe, limiting direct exploitation.</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-43: Object.groupBy k &lt; kMaxSafeInteger guard — dcheck only</div>
+      <div class="loc">object-groupby.tq:55</div>
+      <div class="desc">Iterator index overflow guard is debug-only. Triggering requires >2^53 iterations (~100+ days).</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-44: Branch elimination skips learning from Switch fallthrough</div>
+      <div class="loc">branch-elimination-reducer.h:240-245</div>
+      <div class="desc">Missed optimization only — fails to narrow, cannot cause unsoundness.</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-45: StaticRoots NumberOrBoolean range check relies on map adjacency</div>
+      <div class="loc">machine-lowering-reducer-inl.h:4590-4602</div>
+      <div class="desc">Protected by <code>static_assert</code> at compile time. Low risk given the compile-time guard.</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-46: Simplified-optimization Word32-Number-Word32 roundtrip bypass</div>
+      <div class="loc">simplified-optimization-reducer.h:57-64</div>
+      <div class="desc">Folds signed Int32→Number→Int32 back to original. Roundtrip is mathematically lossless for all Int32 values.</div>
+    </div>
+    <div class="finding">
+      <div class="title">F-47: CSA_DCHECK-only string length assertions</div>
+      <div class="loc">builtins-string-gen.cc:143-144</div>
+      <div class="desc">String lengths are immutable in V8, making a length mismatch extremely unlikely without a fundamental representation bug.</div>
+    </div>
+  </details>
+
+  <h2>Earlier Findings (F-01 through F-33)</h2>
+  <p>The initial source audit identified 33 findings across builtins, compiler, and runtime code. All were verified against the release binary:</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>ID</th><th>Category</th><th>Component</th><th>Status</th></tr>
+      <tr><td>F-29</td><td>Missing re-validation</td><td>includes() outer code</td><td><span class="badge badge-green">Inner defense catches</span></td></tr>
+      <tr><td>F-04, F-11</td><td>Bounds check elim</td><td>TurboFan typer</td><td><span class="badge badge-green">Deopt fires</span></td></tr>
+      <tr><td>F-01–F-03</td><td>DCHECK-only guards</td><td>Various builtins</td><td><span class="badge badge-amber">Not triggerable from JS</span></td></tr>
+      <tr><td>F-05–F-28</td><td>Various patterns</td><td>Compiler + runtime</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+      <tr><td>F-30–F-33</td><td>Additional builtins</td><td>TypedArray paths</td><td><span class="badge badge-green">All mitigated</span></td></tr>
+    </table>
+  </div>
+
+  <h2>PoC Scripts Executed</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Script</th><th>Tests</th><th>Attack Vector</th></tr>
+      <tr><td><code>exploit_f29_*.js</code> (6 variants)</td><td>24</td><td>includes UAF, heap oracle, RAB OOB, multi-shot probes</td></tr>
+      <tr><td><code>exploit_corrected.js</code></td><td>7</td><td>Spec violation + JIT chains A-F</td></tr>
+      <tr><td><code>exploit_jit_advanced.js</code></td><td>8</td><td>Proxy, SAB race, induction overflow, splice, defineProperty</td></tr>
+      <tr><td><code>exploit_subtle.js</code></td><td>12</td><td>Sort-detach, fill-RAB, DataView-RAB, Error.prepareStackTrace</td></tr>
+      <tr><td><code>exploit_sort_uaf.js</code></td><td>5</td><td>TypedArray.sort UAF deep investigation + heap spray</td></tr>
+      <tr><td><code>exploit_deep_chain.js</code></td><td>12</td><td>Feedback pollution, array growth, RegExp, generators, iterators</td></tr>
+      <tr><td><code>exploit_ta_with_rab.js</code></td><td>7</td><td>with/toSorted/toReversed/set/copyWithin/slice/subarray + RAB</td></tr>
+      <tr><td><code>exploit_new_features.js</code></td><td>15</td><td>Iterator helpers, Set methods, groupBy, fromAsync, Wasm, Maglev</td></tr>
+      <tr><td><code>exploit_wasm_v2.js</code></td><td>10</td><td>Wasm Memory.grow + detach in valueOf/sort/set/with/includes</td></tr>
+      <tr><td><code>exploit_float16.js</code></td><td>10</td><td>Float16Array precision, NaN boxing, GSAB, DataView getFloat16</td></tr>
+    </table>
+  </div>
+
+  <h2>Conclusion</h2>
+  <div class="section-note">
+    V8 15.2.107 demonstrates mature, layered defenses against the tested exploit classes. Every callback-during-operation
+    TOCTOU path is guarded by re-validation. JIT compilation deoptimizes correctly on type mismatches. RAB memory is
+    zeroed on shrink. The Turboshaft pipeline has structural weaknesses (disabled verification, DCHECK-only guards) that
+    represent future risk but are not currently triggerable from JavaScript without an additional compiler bug. Real-world
+    V8 exploits at this maturity level typically require discovering a novel optimization pass bug that evades the
+    deoptimization framework &mdash; something beyond what static analysis and black-box testing can reliably find.
+  </div>
+</div>
