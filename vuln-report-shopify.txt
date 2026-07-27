@@ -1,11 +1,20 @@
-Title: CORS Misconfiguration with Credentials on Shopify Analytics Services + Internal SSO Information Disclosure
+Title: Shopify Bug Bounty - Comprehensive Vulnerability Report
+Target: Shopify (HackerOne Program)
+Asset Scope: *.shopify.com, *.shopifysvc.com, *.shopifycloud.com, *.shopifycs.com,
+             *.shopifycdn.com, *.shopify.dev, shop.app, returnly.com, dovetale.com
 
-Asset: monorail-edge.shopifysvc.com, error-analytics-sessions-production.shopifysvc.com, otlp-http-production.shopifysvc.com, minerva.shopifycloud.com
+Severity Summary:
+  - Medium: 1 finding (CORS misconfiguration with credentials)
+  - Low: 3 findings
+  - Informational: 7 findings
 
-Severity: Medium (CORS) / Low (Info Disclosure)
+Tested: July 27, 2026 (server-side only, curl-based reconnaissance)
 
 ============================================================================
 FINDING 1: CORS Reflects Arbitrary Origin with access-control-allow-credentials: true
+Severity: MEDIUM
+Assets: monorail-edge.shopifysvc.com, error-analytics-sessions-production.shopifysvc.com,
+        otlp-http-production.shopifysvc.com
 ============================================================================
 
 Summary:
@@ -19,6 +28,12 @@ Affected Services:
   1. monorail-edge.shopifysvc.com (Shopify analytics event pipeline)
   2. error-analytics-sessions-production.shopifysvc.com (Error analytics sessions)
   3. otlp-http-production.shopifysvc.com (OpenTelemetry collector)
+
+These services are referenced across Shopify's infrastructure CSPs:
+  - checkout.shopifycs.com (payment card fields)
+  - shop.app (Shop app)
+  - inbox.shopify.com (Shopify Inbox)
+  - Multiple *.myshopify.com storefronts
 
 Steps to Reproduce:
 
@@ -77,8 +92,6 @@ Impact:
   Shopify merchant who visits an attacker-controlled page
 - If any future endpoint on these services returns user-specific data in responses,
   this becomes a direct data exfiltration vector
-- The monorail-edge service is referenced in CSPs across Shopify's infrastructure
-  (checkout.shopifycs.com, shop.myshopify.com, etc.)
 
 Current Attack Scenario:
   <script>
@@ -98,12 +111,14 @@ Current Attack Scenario:
 
 Recommendation:
 - Replace the origin-reflecting logic with an explicit allowlist of Shopify domains
-- If wildcard CORS is needed for these analytics ingestion services, remove
+- If wildcard CORS is needed for analytics ingestion, remove
   access-control-allow-credentials: true (use access-control-allow-origin: * without
   credentials, which the spec allows safely)
 
 ============================================================================
-FINDING 2: Minerva Internal SSO - Full OpenID Configuration and JWKS Keys Exposed
+FINDING 2: Minerva Internal SSO - Full OpenID Configuration + JWKS + Okta Client ID
+Severity: LOW
+Asset: minerva.shopifycloud.com
 ============================================================================
 
 Summary:
@@ -165,7 +180,86 @@ Recommendation:
 - Rotate the Okta client ID if possible
 
 ============================================================================
-FINDING 3: Bugsnag API Key Exposure on apps.shopify.com
+FINDING 3: Checkout CSP Exposes Google Cloud Function Endpoint
+Severity: LOW
+Asset: checkout.shopifycs.com
+============================================================================
+
+Summary:
+The checkout card fields service at checkout.shopifycs.com includes a Google Cloud Function
+URL in its Content-Security-Policy connect-src directive. This Cloud Function URL contains
+a partial project name hash that reveals infrastructure details.
+
+Steps to Reproduce:
+  $ curl -sI "https://checkout.shopifycs.com/" | grep content-security-policy
+
+  CSP connect-src includes:
+    https://us-central1-shopify-instrumentat-ff788286.cloudfunctions.net
+
+  The Cloud Function root returns a 404 HTML page:
+  $ curl -s "https://us-central1-shopify-instrumentat-ff788286.cloudfunctions.net/"
+  -> "Error: Page not found"
+
+  The GCP project ID partial hash (ff788286) and the truncated name
+  "shopify-instrumentat" (likely "shopify-instrumentation") are exposed.
+
+Additionally, the checkout CSP reveals these other services:
+  - deposit.shopifycs.com (card data deposit service)
+  - otlp-http-production.shopifysvc.com (OpenTelemetry)
+  - error-analytics-production.shopifysvc.com (Error analytics)
+
+Impact:
+- Reveals internal GCP project naming convention
+- Could aid in discovering other Cloud Functions or GCP resources
+- The deposit.shopifycs.com service (card data handler) uses wildcard CORS
+  (access-control-allow-origin: *) but WITHOUT credentials, which is spec-compliant
+
+============================================================================
+FINDING 4: Internal App Bundle IDs and Team IDs in Apple AASA Files
+Severity: INFORMATIONAL
+Assets: shop.app, www.shopify.com, accounts.shopify.com
+============================================================================
+
+Summary:
+Apple App Site Association (AASA) files expose internal Shopify app bundle identifiers,
+development/debug app variants, and Apple Developer Team IDs that are not publicly
+documented.
+
+Steps to Reproduce:
+  $ curl -s "https://shop.app/.well-known/apple-app-site-association"
+
+  Reveals internal app IDs:
+    - 6ZYNJZSY2C.com.shopifyinternal.arrive (Internal Arrive/Shop app)
+    - 6ZYNJZSY2C.com.shopifyinternal.arrive.native (Internal native variant)
+    - A7XGC83MZE.com.shopify.arrive-dev (Development build)
+    - A7XGC83MZE.com.jadedlabs.arrive (Legacy app name)
+
+  $ curl -s "https://accounts.shopify.com/.well-known/apple-app-site-association"
+
+  Reveals:
+    - 6ZYNJZSY2C.com.shopify.ShopifyInternal (Internal Shopify app)
+    - A7XGC83MZE.com.jadedpixel.shopify (Legacy Shopify app)
+
+  Android assetlinks.json also reveals:
+  $ curl -s "https://shop.app/.well-known/assetlinks.json"
+    - com.shopify.arrive.debug (Debug build package)
+    - SHA256 cert fingerprint: 28:48:CA:19:0A:5C:7F:76:05:BD:3E:62:84:B2:04:DB...
+
+  Apple Developer Team IDs:
+    - A7XGC83MZE (Main Shopify team)
+    - 6ZYNJZSY2C (Internal tools team)
+    - 4ZWB9N82AB (POS team)
+
+Impact:
+- Internal bundle IDs could be used to identify internal-only app builds for reverse
+  engineering or to craft phishing deep links
+- Debug/dev build package names suggest these builds may have reduced security controls
+- Team IDs map internal organizational structure
+
+============================================================================
+FINDING 5: Bugsnag API Key Exposure on apps.shopify.com
+Severity: LOW
+Asset: apps.shopify.com
 ============================================================================
 
 The apps.shopify.com (Shopify App Store) exposes a Bugsnag API key in the page source:
@@ -179,15 +273,23 @@ This allows:
 - Potentially viewing error data (depending on Bugsnag project permissions)
 - Disrupting error monitoring by flooding with fake events
 
+Additionally, Bugsnag endpoints (notify.bugsnag.com, sessions.bugsnag.com) are allowed
+in CSPs across multiple Shopify properties (inbox.shopify.com, shop.app), suggesting
+the same or similar API keys may be used elsewhere.
+
 ============================================================================
-FINDING 4: Legacy Dovetale Infrastructure Active with Session Cookies
+FINDING 6: Legacy Dovetale Infrastructure Active with Session Cookies
+Severity: INFORMATIONAL
+Asset: api.dovetale.com, api.collabs.shopify.com
 ============================================================================
 
 Shopify acquired Dovetale and merged it into Shopify Collabs, but the legacy
 infrastructure remains active:
 
+  - dovetale.com -> redirects to https://www.shopify.com/collabs/find-brands
+    (still sets __cf_bm cookie on dovetale.com domain)
   - admin.dovetale.com -> redirects to admin.collabs.shopify.com -> api.collabs.shopify.com/admin
-  - api.dovetale.com -> returns 404 (5201 bytes - full HTML error page)
+  - api.dovetale.com -> returns 404 (full HTML error page)
   - api.collabs.shopify.com/ping -> returns 204 with:
     - CSRF token in X-CSRF-Token header
     - Session cookie: _dovetale_session (still uses legacy name)
@@ -197,7 +299,9 @@ The continued use of "_dovetale_session" as the cookie name and the Dovetale err
 on api.dovetale.com suggests incomplete migration that could contain legacy vulnerabilities.
 
 ============================================================================
-FINDING 5: Internal Dashboard CORS Allowlisting on community.shopify.com
+FINDING 7: Internal Dashboard CORS Allowlisting on community.shopify.com
+Severity: INFORMATIONAL
+Asset: community.shopify.com
 ============================================================================
 
 community.shopify.com (Discourse) returns CORS headers allowing:
@@ -208,8 +312,194 @@ The ama-dashboard.quick.shopify.io is an internal Shopify tool behind Google IAP
 (Identity-Aware Proxy) with Google OAuth client ID:
   503582027637-7jii1kpbn7d6780kn4p4snv3qijine6v.apps.googleusercontent.com
 
+The community CSP also includes a specific store in frame-ancestors:
+  frame-ancestors 'self' https://www.shopify.com https://grabba-cup.myshopify.com
+
 While the CORS is properly hardcoded (doesn't reflect arbitrary origins), the exposure
-of the internal dashboard domain and Google IAP client ID is an information disclosure.
+of internal dashboard domain, Google IAP client ID, and specific store name in CSP
+frame-ancestors constitutes an information disclosure.
+
+============================================================================
+FINDING 8: shop.app CSP Reveals Internal Infrastructure Domains
+Severity: INFORMATIONAL
+Asset: shop.app
+============================================================================
+
+Summary:
+The Shop app (shop.app) returns an extensive Content-Security-Policy that reveals
+multiple internal Shopify infrastructure domains not publicly documented.
+
+Steps to Reproduce:
+  $ curl -sI "https://shop.app/api/auth" | grep content-security-policy
+
+Internal domains revealed in CSP:
+  - *.shopifyinc.com (Internal corporate domain)
+  - *.pci.shopifyinc.com (PCI-compliant payment environment)
+  - checkout.pci.shopifyinc.com (PCI checkout - hosted on Google UploadServer)
+  - merchant-feedback.shopify.com (Internal merchant feedback tool)
+  - argus.shopifycloud.com (Internal monitoring, supports WSS)
+
+Third-party service integrations revealed:
+  - app.mode.com (Business analytics)
+  - app.datadoghq.com (Infrastructure monitoring)
+  - lookerstudio.google.com (Data visualization)
+  - affirm.com (Buy-now-pay-later, including sandbox)
+  - centinelapi.cardinalcommerce.com (3DS authentication)
+
+S3 buckets referenced:
+  - shopify-arrive.s3.amazonaws.com (403 AccessDenied - properly claimed)
+  - ping-api-production.s3.us-west-2.amazonaws.com (403 - properly claimed)
+  - ping-api-staging.s3.us-west-2.amazonaws.com (403 - properly claimed)
+  - apple-business-chat-commerce-production.s3.us-west-2.amazonaws.com (403)
+  - apple-business-chat-commerce-staging.s3.us-west-2.amazonaws.com (403)
+
+CloudFront distribution:
+  - d2wy8f7a9ursnm.cloudfront.net (returns S3 403 - backed by S3 bucket)
+
+Impact:
+- Maps internal infrastructure and naming conventions
+- Reveals third-party SaaS vendor relationships
+- PCI domain (checkout.pci.shopifyinc.com) resolves but returns 403 from Google
+  UploadServer, confirming it's a separate PCI-compliant environment
+
+============================================================================
+FINDING 9: Multiple Orphaned/Misconfigured Subdomains Returning 502
+Severity: INFORMATIONAL
+Assets: Multiple domains
+============================================================================
+
+Summary:
+Multiple Shopify-owned domains return 502 Bad Gateway, indicating the DNS records exist
+but the backend services are no longer running. While DNS lookups show most of these
+resolve to NXDOMAIN (phantom 502 from proxy layer) or have no A records configured,
+they represent unnecessary attack surface.
+
+502 Bad Gateway domains:
+  1. pos.shopify.com - DNS exists (Status 0) but no A record
+  2. tax.shopify.com - 502
+  3. smtp.shopify.com - 502
+  4. api.shopifypay.com - 502
+  5. notifications.shopify.com - 502
+  6. spin.shopifycloud.com - NXDOMAIN
+  7. storefront-renderer.shopifycloud.com - 502
+  8. storefront-nanny.shopifycloud.com - 502
+  9. storefront-renderer-production.shopifycloud.com - 502
+  10. pci.shopifyinc.com - DNS exists, no A record
+  11. admin.shopifyinc.com - 502
+  12. internal.shopifyinc.com - 502
+  13. vpn.shopifyinc.com - 502
+
+Acquired company legacy domains:
+  14. api.returnly.com - NXDOMAIN (Returnly acquired, redirects to Loop Returns)
+  15. app.returnly.com - NXDOMAIN
+
+503 Service Unavailable:
+  16. logistics.shopify.com - Returns 503 (active Cloudflare + Shopify headers)
+
+Note: These are NOT classic subdomain takeover candidates as they don't have dangling
+CNAMEs to claimable third-party services. They are proxy-level 502s for unconfigured
+backends. However, maintaining DNS records for decommissioned services increases the
+attack surface unnecessarily.
+
+Recommendation:
+- Remove DNS records for decommissioned services
+- Ensure 502 responses don't leak version/stack information (they don't currently)
+
+============================================================================
+FINDING 10: Cloudflare Worker Name Exposed in Redirect Responses
+Severity: INFORMATIONAL
+Asset: www.shopify.com
+============================================================================
+
+Summary:
+All requests to www.shopify.com/admin/* paths are redirected to admin.shopify.com with
+a query parameter that exposes the internal Cloudflare Worker routing identifier.
+
+Steps to Reproduce:
+  $ curl -sI "https://www.shopify.com/admin/api/2024-01/shop.json"
+
+  Response:
+    HTTP/2 301
+    location: https://admin.shopify.com/?redirect=%2Fapi%2F2024-01%2Fshop.json
+              %3F_cf_worker_selection%3D%252Fbrochure-dispatch-8a92c1bd
+
+The parameter `_cf_worker_selection=brochure-dispatch-8a92c1bd` reveals:
+  - Cloudflare Workers are used for request routing
+  - The specific worker name: "brochure-dispatch"
+  - A deployment hash: 8a92c1bd
+
+Impact:
+- Information disclosure of internal infrastructure routing mechanism
+- Worker deployment hash could be used to track deployment changes
+
+============================================================================
+FINDING 11: SPF Record Uses Softfail (~all) Instead of Hardfail (-all)
+Severity: INFORMATIONAL
+Asset: shopify.com (DNS)
+============================================================================
+
+Summary:
+Shopify's SPF record uses ~all (softfail) instead of -all (hardfail):
+
+  v=spf1 include:_spf.google.com include:mail.zendesk.com include:sendgrid.net ~all
+
+While the DMARC policy (p=reject, pct=100) compensates for this by instructing
+receiving servers to reject unauthorized emails, the softfail SPF alone would allow
+some mail servers that don't enforce DMARC to accept spoofed emails.
+
+DMARC record:
+  v=DMARC1; p=reject; pct=100; fo=1;
+  rua=mailto:dmarc-aggregate@shopify.com;
+  ruf=mailto:dmarc-reports@shopify.com
+
+Note: The DMARC p=reject policy effectively mitigates the SPF softfail for compliant
+mail servers. This is primarily a defense-in-depth recommendation.
+
+============================================================================
+NEGATIVE FINDINGS (Properly Secured)
+============================================================================
+
+The following areas were tested and found to be properly secured:
+
+1. CORS on main properties: www.shopify.com, admin.shopify.com, accounts.shopify.com,
+   help.shopify.com, partners.shopify.com, shop.app, pay.shopify.com - no CORS reflection
+
+2. accounts.shopify.com OIDC: No implicit flow, S256 PKCE only, proper security headers
+   (COEP: require-corp, COOP: same-origin)
+
+3. Open redirects: All tested redirect parameters are properly URL-encoded and don't
+   redirect to external domains. accounts.shopify.com/logout returns 403 for external
+   return_to values.
+
+4. CDN path traversal: cdn.shopify.com properly returns 404 for traversal attempts,
+   no directory listing exposed
+
+5. CRLF injection: www.shopify.com properly handles encoded CRLF characters
+
+6. Host header injection / Cache poisoning: X-Forwarded-Host, X-Original-URL, and
+   X-Rewrite-URL headers are blocked by Cloudflare (403)
+
+7. GraphQL introspection: Not enabled on any tested endpoint
+
+8. S3 buckets: All S3 buckets referenced in CSPs return 403 (AccessDenied) -
+   properly claimed, no takeover candidates
+
+9. Path confusion: /admin/../, /admin/%2e%2e/, //admin/ - all properly normalized
+
+10. Collabs API: All endpoints return 401 for unauthenticated requests
+
+11. WebSocket endpoints: /cable returns 404 on www.shopify.com, 403 on admin.shopify.com
+
+12. Source maps: Not exposed on any tested JavaScript bundles
+
+13. Error handling: No stack traces, verbose errors, or version disclosure in error responses
+
+14. Security headers: admin.shopify.com uses COEP: require-corp, COOP: same-origin,
+    X-Frame-Options: SAMEORIGIN. Community uses nonce-based CSP with strict-dynamic.
+
+15. deposit.shopifycs.com: Uses access-control-allow-origin: * (wildcard) WITHOUT
+    credentials - this is spec-compliant. The session ID returned cannot be used to
+    retrieve card data (404 on GET).
 
 ============================================================================
 ENVIRONMENT / NOTES
@@ -218,8 +508,35 @@ ENVIRONMENT / NOTES
 - All testing performed server-side (curl only) - no browser-based testing possible
 - Shopify uses Cloudflare with JS challenge on admin/auth pages (blocks server testing)
 - Shopify's primary attack surface is extremely well-hardened with multiple layers
-- CDN (cdn.shopify.com) properly uses sandbox CSP
-- Storefront API properly restricts admin-level queries (customers, orders not accessible)
-- accounts.shopify.com OpenID configuration is well-documented but includes interesting
-  scopes: "employee", "legacy", "device"
+- dig/nslookup not available in test environment - used dns.google API for DNS lookups
+- Many .shopifycloud.com and .shopifysvc.com services timeout or are not publicly routable
+- accounts.shopify.com OpenID configuration includes interesting scopes:
+  "employee", "legacy", "device"
 - Tested: July 27, 2026
+
+============================================================================
+OVERALL ASSESSMENT
+============================================================================
+
+Shopify maintains an exceptionally well-hardened security posture across their
+infrastructure. Key observations:
+
+- Cloudflare WAF with JS challenge on all sensitive endpoints (admin, accounts, auth)
+- Proper CORS configuration on all main web properties (no reflection)
+- No GraphQL introspection enabled on any tested endpoint
+- No path confusion or traversal vulnerabilities
+- Proper authentication enforcement across all API endpoints
+- COEP/COOP headers on admin and accounts domains
+- Nonce-based CSP with strict-dynamic on community platform
+
+The most impactful finding is the CORS misconfiguration on analytics services
+(Finding 1), which reflects arbitrary origins with credentials. While currently
+limited to write-only analytics endpoints, this represents a spec violation that
+could become critical if any endpoint begins returning user-specific data.
+
+Finding higher-severity vulnerabilities would likely require:
+- Authenticated testing as a Shopify merchant
+- Browser-based testing to bypass Cloudflare JS challenges
+- Testing of the Shopify Partner/App OAuth installation flow
+- Testing of checkout flows with payment processing
+- Mobile app reverse engineering (internal bundle IDs discovered)
