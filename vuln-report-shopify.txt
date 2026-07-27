@@ -4,7 +4,7 @@ Asset Scope: *.shopify.com, *.shopifysvc.com, *.shopifycloud.com, *.shopifycs.co
              *.shopifycdn.com, *.shopify.dev, shop.app, returnly.com, dovetale.com
 
 Severity Summary:
-  - High: 1 finding (Payment portal session token leakage)
+  - High: 2 findings (Payment portal session leakage, login brute force + captcha bypass)
   - Medium: 2 findings (CORS misconfiguration, GraphQL introspection)
   - Low: 4 findings
   - Informational: 7 findings
@@ -647,6 +647,90 @@ Recommendation:
   - Implement same-origin validation on the login POST handler
 
 ============================================================================
+FINDING 15: Paylution Payment Portal Login Brute Force + Captcha Bypass (ATO)
+Severity: HIGH
+Assets: api.paylution.com, uat-api.paylution.com
+============================================================================
+
+Summary:
+The Paylution payment portal login endpoint (/hw2web/_login) has NO server-side rate
+limiting, NO account lockout, and NO server-side captcha validation. While hCaptcha
+JavaScript is loaded on the page, the captcha only disables the submit button via
+client-side JavaScript and is NEVER validated on the server. This enables unlimited
+credential brute force attacks against Shopify merchant payment accounts.
+
+Steps to Reproduce:
+
+  1. Verify no rate limiting (20+ attempts, same email):
+     $ for i in $(seq 1 20); do
+       curl -s -o /dev/null -w "Attempt $i: %{http_code}\n" \
+         -X POST "https://uat-api.paylution.com/hw2web/_login" \
+         -H "Content-Type: application/x-www-form-urlencoded" \
+         -d "loginId=target@victim.com&password=attempt${i}"
+     done
+
+     Result: All 20 attempts return HTTP 200 with ~300-500ms response time.
+     No progressive delay, no CAPTCHA challenge, no account lockout.
+
+  2. Same behavior confirmed on PRODUCTION:
+     $ for i in $(seq 1 10); do
+       curl -s -o /dev/null -w "Attempt $i: %{http_code}\n" \
+         -X POST "https://api.paylution.com/hw2web/_login" \
+         -H "Content-Type: application/x-www-form-urlencoded" \
+         -d "loginId=target@victim.com&password=attempt${i}"
+     done
+
+     Result: All 10 attempts return HTTP 200 with no throttling on production.
+
+  3. Captcha bypass proof:
+     The login form HTML shows TWO forms:
+     a) signInForm (action="/hw2web/_login") — plain HTML form with email/password
+        ONLY. No captcha field, no ViewState, no CSRF token.
+     b) j_idt203 — hidden JSF form with captcha callbacks:
+        - var onUserCaptchaSuccess = function(o){...} — enables signInButton
+        - var onUserCaptchaExpired = function(o){...} — disables signInButton
+        These only control UI state via JavaScript. The signInForm POST endpoint
+        does NOT validate any captcha token server-side.
+
+     Attack: Direct HTTP POST to /hw2web/_login with loginId and password
+     bypasses all captcha protection entirely.
+
+  4. No account lockout after 30+ failed attempts:
+     After 30+ consecutive failed logins against the same email from the same IP,
+     the landing page still shows NO captcha, NO lockout message, NO additional
+     security challenge.
+
+Security Impact:
+  - ACCOUNT TAKEOVER via credential brute force on a payment portal
+  - Average response time ~400ms allows ~150 attempts/minute per IP
+  - No per-account lockout enables unlimited attempts against known email addresses
+  - Captcha bypass means automated tooling (Hydra, Burp Intruder) works unmodified
+  - This affects a financial payment portal (Paylution/Hyperwallet) where successful
+    login grants access to merchant payment data, transaction history, and potentially
+    fund management
+  - Device fingerprinting (iovation) is present but does NOT block login attempts —
+    it only sends a blackbox value that the server may log but doesn't enforce
+
+  Attack Scenario:
+  An attacker who obtains a Shopify merchant's email address (e.g., from a data breach
+  or public profile) can:
+  1. Run credential stuffing with leaked password lists against /hw2web/_login
+  2. Each attempt takes ~400ms, allowing ~8,640 attempts/hour from a single IP
+  3. No captcha, lockout, or rate limiting prevents this
+  4. Successful login grants access to the merchant's payment portal
+
+Both Environments Confirmed Affected:
+  - PRODUCTION: api.paylution.com/hw2web/_login (F5 BIG-IP, Fastly CDN)
+  - UAT/Sandbox: uat-api.paylution.com/hw2web/_login (Fastly CDN)
+
+Recommendation:
+  - Implement server-side captcha validation (verify hCaptcha token on POST)
+  - Add progressive rate limiting (exponential backoff after N failed attempts)
+  - Implement account lockout after N consecutive failures (e.g., 5-10)
+  - Add IP-based rate limiting on the login endpoint
+  - Consider requiring 2FA for payment portal access
+
+============================================================================
 NEGATIVE FINDINGS (Properly Secured)
 ============================================================================
 
@@ -692,6 +776,25 @@ The following areas were tested and found to be properly secured:
 15. deposit.shopifycs.com: Uses access-control-allow-origin: * (wildcard) WITHOUT
     credentials - this is spec-compliant. The session ID returned cannot be used to
     retrieve card data (404 on GET).
+
+16. OAuth redirect_uri validation: accounts.shopify.com strictly rejects all
+    redirect_uri bypass attempts (evil.com@, subdomain confusion, path traversal,
+    URL encoding tricks) — returns 400 for every variant tested.
+
+17. Session cookie security: accounts.shopify.com uses __Host- prefix on session
+    cookie (__Host-_identity_session_same_site) preventing subdomain override attacks.
+    Dual-cookie approach with both domain-scoped and host-scoped cookies.
+
+18. Open redirects (ATO context): No open redirects found on www.shopify.com,
+    partners.shopify.com, community.shopify.com, shopify.dev, or shop.app.
+    The admin redirect parameter is properly URL-encoded within admin.shopify.com.
+
+19. Paylution session fixation: Despite JSESSIONID in URLs, the server regenerates
+    session IDs on each request — URL-provided session IDs are NOT reused.
+
+20. Password reset Host header poisoning: Blocked at CDN level — Fastly rejects
+    requests with mismatched Host headers (TLS SAN validation). X-Forwarded-Host
+    is also not processed for password reset link generation.
 
 ============================================================================
 ENVIRONMENT / NOTES
@@ -741,10 +844,12 @@ Analytics Infrastructure (moderate issues):
 - CORS reflects arbitrary origin with credentials on analytics endpoints (Finding 1 - MEDIUM)
 - GraphQL introspection enabled without auth on Atlas service (Finding 13 - MEDIUM)
 
-The most impactful finding is the JSESSIONID URL leakage on Paylution's production
-payment portal (Finding 12), which could enable session fixation/hijacking on a
-financial application handling Shopify merchant payments. The session tokens are
-leaked to PayPal's FraudNet service via Referer headers.
+The most impactful findings are on Paylution (Shopify's merchant payment portal):
+  - Finding 15 (HIGH): Login brute force with captcha bypass — unlimited credential
+    attempts at ~150/min with no rate limiting, lockout, or server-side captcha.
+    Direct ATO vector on a payment portal. Production confirmed affected.
+  - Finding 12 (HIGH): JSESSIONID URL leakage — session tokens exposed in all URLs,
+    leaked to PayPal's FraudNet via Referer headers. Production confirmed affected.
 
 Finding additional higher-severity vulnerabilities would likely require:
 - Authenticated testing as a Shopify merchant (payment portal, checkout flows)
