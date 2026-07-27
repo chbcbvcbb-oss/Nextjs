@@ -1,0 +1,55 @@
+Title: CSP script-src whitelists dangling domains with claimable S3 buckets
+
+Asset: www.hollisterco.com (also affects abercrombie.com - same CSP)
+
+Severity: High
+
+Summary:
+The Content-Security-Policy on hollisterco.com includes multiple domains in the script-src directive that no longer exist. Four of these domains have no corresponding S3 bucket, meaning anyone with an AWS account can register them. If DNS ever routes to these buckets (domain expiry, misconfiguration, or re-registration of parent domains), an attacker can serve arbitrary JavaScript in the context of hollisterco.com.
+
+Steps to Reproduce:
+
+1. Grab the CSP header from any page:
+   curl -sI "https://www.hollisterco.com/shop/us/UserAccountDisplay.css" | grep content-security-policy
+
+2. Check DNS resolution for these script-src domains:
+   - hollister.sspinc.io -> NXDOMAIN
+   - abercrombie.sspinc.io -> NXDOMAIN
+   - s.btstatic.com -> NXDOMAIN
+   - s.thebrighttag.com -> NXDOMAIN
+   - hub.signal.co -> NXDOMAIN
+   - d3v27wwd40f0xu.cloudfront.net -> NXDOMAIN
+
+3. Verify S3 bucket availability:
+   curl http://hollister.sspinc.io.s3.amazonaws.com/
+   Response: <Code>NoSuchBucket</Code>
+
+   curl http://abercrombie.sspinc.io.s3.amazonaws.com/
+   Response: <Code>NoSuchBucket</Code>
+
+   curl http://s.btstatic.com.s3.amazonaws.com/
+   Response: <Code>NoSuchBucket</Code>
+
+   curl http://s.thebrighttag.com.s3.amazonaws.com/
+   Response: <Code>NoSuchBucket</Code>
+
+   All four buckets do not exist and can be created by any AWS account.
+
+Impact:
+- If any parent domain registration lapses (btstatic.com and thebrighttag.com are legacy BrightTag/Signal domains from a 2018 acquisition by TransUnion, not actively used), an attacker registers it, points the subdomain to S3, and serves malicious JS trusted by the CSP.
+- Full XSS in the context of hollisterco.com - session theft, payment skimming, credential harvesting.
+- The CSP also includes 'unsafe-inline' and 'unsafe-eval' which compounds the weakness.
+- This is a supply chain risk from abandoned third-party vendor integrations.
+
+Context on the dangling domains:
+- s.btstatic.com / s.thebrighttag.com / hub.signal.co: BrightTag (acquired by Signal in 2014, then TransUnion in 2018). Parent domains are registered but completely dormant with no A records and no web presence.
+- hollister.sspinc.io / abercrombie.sspinc.io: SSPinc fit predictor service. Parent domain sspinc.io is active but these subdomains have no DNS records.
+- d3v27wwd40f0xu.cloudfront.net: Deleted AWS CloudFront distribution.
+
+Recommendation:
+Remove all non-resolving domains from the CSP script-src directive. Audit remaining third-party entries periodically to prevent CSP rot as vendor relationships end.
+
+Environment:
+- URL: https://www.hollisterco.com
+- Browser: Any (CSP is server-side)
+- Tested: July 27, 2026
