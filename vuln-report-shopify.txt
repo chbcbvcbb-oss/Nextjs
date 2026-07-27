@@ -7,7 +7,7 @@ Severity Summary:
   - High: 2 findings (Payment portal session leakage, login brute force + captcha bypass)
   - Medium: 3 findings (CORS misconfiguration, GraphQL introspection, REST API wallet leak)
   - Low: 4 findings
-  - Informational: 8 findings
+  - Informational: 9 findings
 
 Tested: July 27, 2026 (server-side only, curl-based reconnaissance)
 
@@ -394,8 +394,12 @@ Acquired company legacy domains:
   14. api.returnly.com - NXDOMAIN (Returnly acquired, redirects to Loop Returns)
   15. app.returnly.com - NXDOMAIN
 
+Development/internal:
+  16. spin.dev.shopify.io - 502 (Shopify Spin development platform)
+  17. dev.shopify.io - 502 (Shopify development environment)
+
 503 Service Unavailable:
-  16. logistics.shopify.com - Returns 503 (active Cloudflare + Shopify headers)
+  18. logistics.shopify.com - Returns 503 (active Cloudflare + Shopify headers)
 
 Note: These are NOT classic subdomain takeover candidates as they don't have dangling
 CNAMEs to claimable third-party services. They are proxy-level 502s for unconfigured
@@ -835,6 +839,49 @@ Recommendation:
   - If version tracking is needed, use internal logging rather than HTTP headers
 
 ============================================================================
+FINDING 18: Paylution UAT Exposes Raw Tomcat Error Pages + Unencrypted JSF ViewState
+Severity: INFORMATIONAL
+Asset: uat-api.paylution.com
+============================================================================
+
+Summary:
+The Paylution UAT environment exposes multiple information disclosure issues:
+
+1. Raw Apache Tomcat error pages on REST API endpoints reveal the web container:
+   - GET /rest/v4/webhook-notifications returns raw Tomcat 401 error page with
+     default H1/H2/H3 CSS styling (Tahoma,Arial,sans-serif;color:white;
+     background-color:#525D76) — the Tomcat default error page unchanged
+   - POST to same endpoint returns raw Tomcat 405 "Method Not Allowed" page
+
+2. JSF ViewState values are unencrypted numeric pairs (e.g., "198878715336894106:4172201093714061750")
+   on the password reset form at /hw2web/wallet/password/forgottenUserCredential.xhtml.
+   While server-side state saving is used (these are session references, not serialized
+   objects), unencrypted ViewState IDs can enable cross-site request forgery if predictable.
+
+3. The /hw2web/landing.xhtml login page exposes:
+   - PayPal fraud detection config: fingerprint ID "82f0793d-da94-40ac-8844-06d322165e57"
+   - iovation device fingerprinting integration
+   - PayPal CDN loading (c.paypal.com/da/r/fb.js)
+
+Steps to Reproduce:
+
+  $ curl -s "https://uat-api.paylution.com/rest/v4/webhook-notifications"
+  # Returns raw Tomcat 401 error page (not JSON, not custom error page)
+
+  $ curl -s "https://uat-api.paylution.com/hw2web/wallet/password/forgottenUserCredential.xhtml" | grep ViewState
+  # ViewState value is plaintext numeric: "-2391478216859116768:2784538994519630231"
+
+Note: Production (api.paylution.com) is protected by F5 BIG-IP WAF which blocks
+direct access to most /hw2web/ paths. However, the WAF itself returns HTTP 200
+for blocked requests (with "Request Rejected" HTML body), which is a non-standard
+status code that may confuse security scanners and WAF-bypass detection tools.
+
+Recommendation:
+  - Configure custom error pages to prevent Tomcat default error page exposure
+  - Encrypt JSF ViewState values (set javax.faces.ClientStateSaving encryption)
+  - Use standard HTTP 403 status codes for WAF block pages, not 200
+
+============================================================================
 NEGATIVE FINDINGS (Properly Secured)
 ============================================================================
 
@@ -899,6 +946,28 @@ The following areas were tested and found to be properly secured:
 20. Password reset Host header poisoning: Blocked at CDN level — Fastly rejects
     requests with mismatched Host headers (TLS SAN validation). X-Forwarded-Host
     is also not processed for password reset link generation.
+
+21. Paylution OAuth/SSO endpoints: /hw2web/oauth/authorize, /hw2web/oauth/token,
+    /hw2web/sso on production are all blocked by F5 BIG-IP WAF. On UAT, the OAuth
+    page uses postMessage('payframeCheck', '*') to any origin, but the receiver
+    function validates ev.origin !== '' which prevents exploitation from standard
+    cross-origin contexts.
+
+22. REST API authentication bypass: Paylution REST API (/rest/v3/, /rest/v4/)
+    consistently returns 401 for all tested endpoints (users, programs, payments,
+    transfers, bank-accounts, prepaid-cards, etc.) regardless of authentication
+    method (Basic auth, Bearer token, no auth). No data access without valid credentials.
+
+23. themes.shopify.com OAuth: /auth/google_oauth2/callback properly detects CSRF
+    (returns csrf_detected error). /auth/shopify/callback returns invalid_site.
+    Both use proper anti-CSRF state validation.
+
+24. Shopify MFA endpoints: accounts.shopify.com/two-step, /mfa, /otp, /recovery-codes,
+    /totp all protected by Cloudflare JS challenge — no direct server-side access possible.
+
+25. CDN and infrastructure: No .env, .git/config, or source map exposure on shopify.dev.
+    shopify-assets.shopifycdn.com returns 404 for sensitive file paths. No API keys
+    found in initial page loads of www.shopify.com or partners.shopify.com.
 
 ============================================================================
 ENVIRONMENT / NOTES
