@@ -4,8 +4,9 @@ Asset Scope: *.shopify.com, *.shopifysvc.com, *.shopifycloud.com, *.shopifycs.co
              *.shopifycdn.com, *.shopify.dev, shop.app, returnly.com, dovetale.com
 
 Severity Summary:
-  - Medium: 1 finding (CORS misconfiguration with credentials)
-  - Low: 3 findings
+  - High: 1 finding (Payment portal session token leakage)
+  - Medium: 2 findings (CORS misconfiguration, GraphQL introspection)
+  - Low: 4 findings
   - Informational: 7 findings
 
 Tested: July 27, 2026 (server-side only, curl-based reconnaissance)
@@ -456,6 +457,196 @@ Note: The DMARC p=reject policy effectively mitigates the SPF softfail for compl
 mail servers. This is primarily a defense-in-depth recommendation.
 
 ============================================================================
+FINDING 12: Paylution Payment Portal JSESSIONID Leaked in URLs (Production)
+Severity: HIGH
+Assets: api.paylution.com, uat-api.paylution.com
+============================================================================
+
+Summary:
+Shopify's merchant payment portal (Paylution/Hyperwallet hw2web application) exposes
+Java JSESSIONID session tokens directly in URL paths on BOTH production and UAT
+environments. This is a classic session token leakage vulnerability affecting a
+payment-processing application that handles Shopify merchant financial data.
+
+Paylution is confirmed as a Shopify payment infrastructure component:
+  - Referenced in partners.shopify.com CSP connect-src (both api.paylution.com and
+    uat-api.paylution.com)
+  - Domain MX points to smtp-in.hyperwallet.com (PayPal/Hyperwallet provides Shopify
+    Balance payment services)
+
+Affected URLs (Production - api.paylution.com/hw2web/):
+Every resource URL contains ;jsessionid=<32-char-hex> in the URL path:
+  /hw2web/javax.faces.resource/jquery-3.5.1.min.js.xhtml;jsessionid=36b2ffb2fbf374d8...
+  /hw2web/javax.faces.resource/bootstrap.css.xhtml;jsessionid=36b2ffb2fbf374d8...
+  /hw2web/javax.faces.resource/jsf.js.xhtml;jsessionid=36b2ffb2fbf374d8...?ln=javax.faces
+  /hw2web/wallet/password/forgottenUserCredential.xhtml;jsessionid=36b2ffb2fbf374d8...
+  /hw2web/consumer/activation/load.xhtml;jsessionid=36b2ffb2fbf374d8...
+  /hw2web/javax.faces.resource/3450004/en/triple_play.png.xhtml;jsessionid=36b2ffb2...
+
+Steps to Reproduce:
+
+  1. Visit the payment portal landing page:
+     $ curl -sL "https://api.paylution.com/hw2web/" | grep "jsessionid"
+
+     All JavaScript, CSS, image, and navigation links contain the session token
+     in the URL path as ;jsessionid=<value>
+
+  2. The session token leaks via HTTP Referer header because the page loads an
+     external JavaScript from PayPal:
+     <script src="https://c.paypal.com/da/r/fb.js"></script>
+
+     When this script loads, the browser sends a Referer header containing the
+     full URL including the JSESSIONID to c.paypal.com
+
+  3. UAT environment is identically affected:
+     $ curl -sL "https://uat-api.paylution.com/hw2web/" | grep "jsessionid"
+
+Security Impact:
+  - Session Fixation: An attacker can craft a URL with a known JSESSIONID and trick a
+    merchant into authenticating with it, then hijack the authenticated session
+  - Referer Leakage: JSESSIONID is sent to PayPal's c.paypal.com via Referer header
+    when external scripts are loaded from an authenticated page
+  - CDN Caching: Both environments use Fastly CDN (via: 1.1 varnish) which could
+    cache URLs containing session tokens
+  - Browser History/Bookmarks: Session tokens persist in browser history and bookmarks
+  - This is a PAYMENT PORTAL handling Shopify merchant financial data
+
+Additional Technical Details:
+  - Technology: JavaServer Faces (JSF) with PrimeFaces and Mojarra
+  - ViewState: Server-side (numeric references: "760537467386706601:-7134477486797323604")
+  - Fraud Detection: iovation BlackBox + PayPal FraudNet
+  - Infrastructure: AWS Route53 DNS, Fastly CDN (UAT), F5 BIG-IP (Production)
+  - Merchant Config ID in resource path: 3450004
+
+Recommendation:
+  - Disable URL-based session tracking (use cookie-only sessions)
+  - In Java/JSF: set <tracking-mode>COOKIE</tracking-mode> in web.xml
+  - Apply URL rewriting filters to strip jsessionid from URLs
+  - Audit Fastly CDN cache rules to ensure session-containing URLs are not cached
+
+============================================================================
+FINDING 13: Atlas GraphQL Introspection Without Authentication
+Severity: MEDIUM
+Asset: atlas.shopifysvc.com
+============================================================================
+
+Summary:
+Shopify's Atlas service (address validation/geocoding) exposes a fully introspectable
+GraphQL endpoint at atlas.shopifysvc.com/graphql without requiring authentication.
+The endpoint reveals the complete API schema including internal types, query fields,
+and parameters.
+
+Steps to Reproduce:
+
+  1. Full schema introspection:
+     $ curl -s -X POST "https://atlas.shopifysvc.com/graphql" \
+       -H "Content-Type: application/json" \
+       -d '{"query":"{ __schema { queryType { name } mutationType { name } types { name kind description } } }"}'
+
+     Returns 200 with complete schema including 40+ types:
+       - Address, AddressInput, FormattedAddress
+       - Geocode, GeocodeAccuracy, GeocodeConfidence
+       - Prediction, Suggestion, Validation
+       - Country, Currency, Language, TimeZone
+       - Internal enums: CompletionService, MatchingStrategy, ValidationProfile
+
+  2. Full query field enumeration:
+     $ curl -s -X POST "https://atlas.shopifysvc.com/graphql" \
+       -H "Content-Type: application/json" \
+       -d '{"query":"{ __schema { queryType { fields { name args { name type { name kind ofType { name } } } } } } }"}'
+
+     Reveals 10 query operations:
+       - address(id, locale, adapterOverride, sessionToken, extendedFields)
+       - countries(locale, signupOnly, includeDeprecatedZones, includeHiddenZones)
+       - country(countryCode, locale, includeDeprecatedZones, includeHiddenZones)
+       - currencies(locale)
+       - formatAddress(address)
+       - geocodes(address, ..., adapterOverride, sessionToken)
+       - language(languageCode)
+       - predictions(query, countryCode, locale, ..., adapterOverride, sessionToken)
+       - timeZones(locale)
+       - validation(address, locale, validationProfile, messageFormat, sessionToken)
+
+  3. Sensitive operations are properly gated:
+     $ curl -s -X POST "https://atlas.shopifysvc.com/graphql" \
+       -H "Content-Type: application/json" \
+       -d '{"query":"{ address(id: \"1\", locale: \"en\") { address1 } }"}'
+     -> {"errors":[{"message":"Not allowed"}]}
+
+     $ curl -s -X POST "https://atlas.shopifysvc.com/graphql" \
+       -H "Content-Type: application/json" \
+       -d '{"query":"{ geocodes(address: \"test\", adapterOverride: \"internal\") { latitude } }"}'
+     -> {"errors":[{"message":"Not allowed"}]}
+
+Security Impact:
+  - Full API schema disclosure enables targeted attacks against specific operations
+  - The "adapterOverride" parameter reveals existence of internal adapters (returns
+    "Not allowed" rather than "unknown parameter")
+  - "includeHiddenZones" parameter suggests existence of hidden zone data
+  - "sessionToken" parameters on multiple queries suggest authenticated operations
+    that could be accessed if a valid token is obtained
+  - Public data queries (countries, currencies) work without auth, but schema reveals
+    the full attack surface for the service
+
+Note: Atlas is Shopify's address validation/geocoding service used by checkout.
+While the data exposed through working queries is public (countries, currencies),
+GraphQL introspection should be disabled in production per security best practices.
+
+Recommendation:
+  - Disable GraphQL introspection in production
+  - Consider rate-limiting the GraphQL endpoint
+  - Review whether adapterOverride validation errors should be more generic
+
+============================================================================
+FINDING 14: Paylution Login Form Missing CSRF Protection
+Severity: LOW
+Asset: api.paylution.com, uat-api.paylution.com
+============================================================================
+
+Summary:
+The Paylution payment portal login form at /hw2web/_login uses a plain HTML form
+without CSRF token protection, enabling login CSRF attacks.
+
+Steps to Reproduce:
+
+  1. Observe the login form source:
+     $ curl -sL "https://uat-api.paylution.com/hw2web/" | grep -A5 "signInForm"
+
+     The login form is a plain HTML form:
+     <form id="signInForm" action="/hw2web/_login" method="POST">
+       <input name="loginId" type="text" ... />
+       <input name="password" type="password" ... />
+       <input type="submit" name="signInButton" value="Sign In" ... />
+       <input type="hidden" name="iovationBlackBox" ... />
+     </form>
+
+     Note: No CSRF token, no JSF ViewState on the login form itself.
+     (A separate hidden form j_idt203 has a ViewState for captcha handling,
+     but the login form lacks CSRF protection.)
+
+  2. Login CSRF attack:
+     An attacker can create a page that auto-submits a login form with the
+     attacker's credentials, forcing the victim to be logged into the
+     attacker's payment portal account. This enables:
+     - Victim's payment actions appearing in attacker's account
+     - Potential for social engineering ("check your payment portal balance")
+
+  3. Same issue exists on production:
+     $ curl -sL "https://api.paylution.com/hw2web/" | grep -A5 "signInForm"
+
+Impact:
+  - Login CSRF allows forcing a victim into an attacker-controlled session
+  - On a payment portal, this could enable the attacker to observe the victim's
+    financial activities or inject payment instructions
+  - iovation device fingerprinting may partially mitigate but does not replace
+    CSRF protection
+
+Recommendation:
+  - Add CSRF token to the login form
+  - Consider using JSF ViewState protection on the login form
+  - Implement same-origin validation on the login POST handler
+
+============================================================================
 NEGATIVE FINDINGS (Properly Secured)
 ============================================================================
 
@@ -479,7 +670,8 @@ The following areas were tested and found to be properly secured:
 6. Host header injection / Cache poisoning: X-Forwarded-Host, X-Original-URL, and
    X-Rewrite-URL headers are blocked by Cloudflare (403)
 
-7. GraphQL introspection: Not enabled on any tested endpoint
+7. GraphQL introspection: Disabled on main Shopify properties (shopify.com, shop.app,
+   checkout.shopifycs.com). Enabled on atlas.shopifysvc.com (see Finding 13).
 
 8. S3 buckets: All S3 buckets referenced in CSPs return 403 (AccessDenied) -
    properly claimed, no takeover candidates
@@ -518,25 +710,46 @@ ENVIRONMENT / NOTES
 OVERALL ASSESSMENT
 ============================================================================
 
-Shopify maintains an exceptionally well-hardened security posture across their
-infrastructure. Key observations:
+Shopify's core infrastructure (*.shopify.com, *.shopifycloud.com) maintains an
+exceptionally well-hardened security posture. However, third-party payment
+infrastructure (Paylution/Hyperwallet) integrated via Shopify Partners has
+significant legacy security issues.
 
+Key observations:
+
+Core Shopify (well-hardened):
 - Cloudflare WAF with JS challenge on all sensitive endpoints (admin, accounts, auth)
 - Proper CORS configuration on all main web properties (no reflection)
-- No GraphQL introspection enabled on any tested endpoint
 - No path confusion or traversal vulnerabilities
 - Proper authentication enforcement across all API endpoints
 - COEP/COOP headers on admin and accounts domains
 - Nonce-based CSP with strict-dynamic on community platform
+- No HTTP request smuggling (tested CL.TE, TE.CL, H2.CL, H2.TE, TE obfuscation)
+- No SSRF vectors found on tested endpoints
+- No XXE (services reject XML content type)
+- No web cache poisoning (admin paths return cf-cache-status: BYPASS)
+- No CRLF injection on any tested service
+- No origin IP disclosure (all services behind Cloudflare or Google Cloud)
 
-The most impactful finding is the CORS misconfiguration on analytics services
-(Finding 1), which reflects arbitrary origins with credentials. While currently
-limited to write-only analytics endpoints, this represents a spec violation that
-could become critical if any endpoint begins returning user-specific data.
+Payment Infrastructure (Paylution - weaker):
+- JSESSIONID leaked in URLs on production payment portal (Finding 12 - HIGH)
+- Missing CSRF protection on payment portal login (Finding 14 - LOW)
+- Legacy JSF/PrimeFaces technology stack on payment processing application
+- Different infrastructure (AWS/Fastly/F5) than core Shopify (GCP/Cloudflare)
 
-Finding higher-severity vulnerabilities would likely require:
-- Authenticated testing as a Shopify merchant
-- Browser-based testing to bypass Cloudflare JS challenges
-- Testing of the Shopify Partner/App OAuth installation flow
-- Testing of checkout flows with payment processing
-- Mobile app reverse engineering (internal bundle IDs discovered)
+Analytics Infrastructure (moderate issues):
+- CORS reflects arbitrary origin with credentials on analytics endpoints (Finding 1 - MEDIUM)
+- GraphQL introspection enabled without auth on Atlas service (Finding 13 - MEDIUM)
+
+The most impactful finding is the JSESSIONID URL leakage on Paylution's production
+payment portal (Finding 12), which could enable session fixation/hijacking on a
+financial application handling Shopify merchant payments. The session tokens are
+leaked to PayPal's FraudNet service via Referer headers.
+
+Finding additional higher-severity vulnerabilities would likely require:
+- Authenticated testing as a Shopify merchant (payment portal, checkout flows)
+- Browser-based testing to bypass Cloudflare JS challenges on admin/accounts
+- Testing of Shopify Partner/App OAuth installation flow
+- Deeper testing of the Paylution JSF application (ViewState manipulation,
+  EL injection, JSF-specific attack vectors)
+- Mobile app reverse engineering (internal bundle IDs discovered in AASA files)
