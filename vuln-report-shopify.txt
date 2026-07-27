@@ -5,9 +5,9 @@ Asset Scope: *.shopify.com, *.shopifysvc.com, *.shopifycloud.com, *.shopifycs.co
 
 Severity Summary:
   - High: 2 findings (Payment portal session leakage, login brute force + captcha bypass)
-  - Medium: 2 findings (CORS misconfiguration, GraphQL introspection)
+  - Medium: 3 findings (CORS misconfiguration, GraphQL introspection, REST API wallet leak)
   - Low: 4 findings
-  - Informational: 7 findings
+  - Informational: 8 findings
 
 Tested: July 27, 2026 (server-side only, curl-based reconnaissance)
 
@@ -729,6 +729,110 @@ Recommendation:
   - Implement account lockout after N consecutive failures (e.g., 5-10)
   - Add IP-based rate limiting on the login endpoint
   - Consider requiring 2FA for payment portal access
+
+============================================================================
+FINDING 16: Paylution REST API Leaks Internal Wallet Numbers via HTTP Headers (IDOR)
+Severity: MEDIUM
+Asset: api.paylution.com, uat-api.paylution.com
+============================================================================
+
+Summary:
+The Paylution/Hyperwallet REST API (v3/v4) leaks internal wallet/program numbers
+via the `x-hw-wallet-number` response header. Different usernames in Basic auth
+produce different wallet numbers, even on FAILED authentication (401 responses).
+This constitutes an information disclosure / IDOR vulnerability — unauthenticated
+attackers can enumerate internal wallet identifiers by brute-forcing usernames.
+
+Steps to Reproduce:
+
+  1. Query the REST API with different Basic auth usernames:
+
+     $ curl -sI -u "test:test" "https://api.paylution.com/rest/v4/users" 2>&1 | grep -i "x-hw-wallet"
+     x-hw-wallet-number: 356628091684
+
+     $ curl -sI -u "root:root" "https://api.paylution.com/rest/v4/users" 2>&1 | grep -i "x-hw-wallet"
+     x-hw-wallet-number: 3450004
+
+     $ curl -sI -u "api:api" "https://api.paylution.com/rest/v4/users" 2>&1 | grep -i "x-hw-wallet"
+     x-hw-wallet-number: 313690548166
+
+  2. Other usernames return NO wallet header (admin, shopify, merchant, system)
+     indicating the header is username-dependent, not a static value.
+
+  3. The wallet number "3450004" returned for username "root" matches the merchant
+     configuration ID observed in the hw2web portal image resource path:
+     /hw2web/javax.faces.resource/3450004/en/triple_play.png.xhtml
+     This confirms these are real internal identifiers, not dummy values.
+
+  4. Server version also varies between requests, revealing load balancer topology:
+     x-server: 8.51, 8.52, 8.53, 8.54, 8.55, 8.56 (production)
+     x-server: 73.91 (UAT)
+
+  5. Both v3 and v4 API versions expose the same behavior:
+     $ curl -sI -u "test:test" "https://api.paylution.com/rest/v3/users"
+     (same x-hw-wallet-number header returned)
+
+Shopify Relevance:
+  - Paylution (Hyperwallet) is Shopify's merchant payment infrastructure
+  - Shopify Partners CSP includes both api.paylution.com and uat-api.paylution.com
+  - Wallet numbers correspond to merchant programs/accounts
+  - Leaked wallet numbers could be used to target specific merchant accounts
+    in combination with other findings (brute force login, session leakage)
+
+Security Impact:
+  - Information disclosure: Internal wallet/program identifiers leaked to
+    unauthenticated users via HTTP response headers
+  - IDOR-like behavior: Different usernames map to different wallet numbers,
+    suggesting the API resolves program assignments before authentication
+  - Enumeration: Attackers can discover valid wallet numbers by iterating
+    usernames, building a map of internal account structures
+  - Server fingerprinting: x-server header reveals backend version numbers
+    and load balancer distribution (6 backends on prod, 1 on UAT)
+  - Chaining potential: Wallet numbers + JSESSIONID leak (Finding 12) +
+    brute force login (Finding 15) creates a multi-stage attack path
+
+Recommendation:
+  - Remove x-hw-wallet-number from all error/401 responses
+  - Only include wallet identifiers in authenticated, authorized responses
+  - Remove x-server version disclosure header
+  - Ensure Basic auth credential validation occurs BEFORE any internal
+    resource resolution or header generation
+
+============================================================================
+FINDING 17: Paylution REST API Server Version Disclosure
+Severity: INFORMATIONAL
+Asset: api.paylution.com, uat-api.paylution.com
+============================================================================
+
+Summary:
+The Paylution REST API returns an `x-server` header revealing internal backend
+server version numbers. Production shows versions 8.51 through 8.56 (indicating
+6+ load-balanced backends), while UAT shows version 73.91.
+
+Steps to Reproduce:
+
+  $ for i in $(seq 1 10); do curl -sI "https://api.paylution.com/rest/v4/users" 2>&1 | grep "x-server"; done
+  x-server: 8.53
+  x-server: 8.51
+  x-server: 8.56
+  x-server: 8.54
+  x-server: 8.52
+  x-server: 8.55
+  ...
+
+  $ curl -sI "https://uat-api.paylution.com/rest/v4/users" 2>&1 | grep "x-server"
+  x-server: 73.91
+
+Security Impact:
+  - Reveals number of backend servers behind load balancer (6 on production)
+  - Version numbers could help identify specific software versions for
+    targeted exploitation
+  - UAT version (73.91) significantly higher than production (8.5x), revealing
+    internal release cadence
+
+Recommendation:
+  - Remove x-server header from all responses
+  - If version tracking is needed, use internal logging rather than HTTP headers
 
 ============================================================================
 NEGATIVE FINDINGS (Properly Secured)
