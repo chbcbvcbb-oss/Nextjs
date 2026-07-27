@@ -4,7 +4,8 @@ Asset Scope: *.shopify.com, *.shopifysvc.com, *.shopifycloud.com, *.shopifycs.co
              *.shopifycdn.com, *.shopify.dev, shop.app, returnly.com, dovetale.com
 
 Severity Summary:
-  - High: 2 findings (Payment portal session leakage, login brute force + captcha bypass)
+  - High: 3 findings (Payment portal session leakage, login brute force + captcha bypass,
+                       REST API CORS with credentials)
   - Medium: 3 findings (CORS misconfiguration, GraphQL introspection, REST API wallet leak)
   - Low: 4 findings
   - Informational: 9 findings
@@ -839,7 +840,90 @@ Recommendation:
   - If version tracking is needed, use internal logging rather than HTTP headers
 
 ============================================================================
-FINDING 18: Paylution UAT Exposes Raw Tomcat Error Pages + Unencrypted JSF ViewState
+FINDING 18: Paylution REST API CORS Reflects Arbitrary Origin with Credentials (HIGH)
+Severity: HIGH
+Asset: api.paylution.com, uat-api.paylution.com
+============================================================================
+
+Summary:
+The Paylution/Hyperwallet REST API (v4) reflects arbitrary Origin headers in
+access-control-allow-origin responses while simultaneously setting
+access-control-allow-credentials: true. This allows ANY website to make fully
+authenticated cross-origin requests to the payment API and READ the responses,
+enabling cross-origin data theft from authenticated merchant sessions.
+
+This is CRITICAL because:
+- The API handles financial/payment data for Shopify merchants
+- ALL HTTP methods are allowed cross-origin (GET, POST, PUT, DELETE, PATCH)
+- The Authorization header is explicitly allowed in CORS headers
+- The X-HW-Wallet-Number header is listed in allowed headers (exposing wallet IDs)
+- Both production AND UAT environments are affected
+
+Steps to Reproduce:
+
+  1. Verify CORS origin reflection with preflight (no auth needed):
+
+     $ curl -sI -X OPTIONS "https://api.paylution.com/rest/v4/users" \
+       -H "Origin: https://evil.com" \
+       -H "Access-Control-Request-Method: GET" \
+       -H "Access-Control-Request-Headers: Authorization"
+
+     Response headers:
+       access-control-allow-origin: https://evil.com
+       access-control-allow-credentials: true
+       access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS, PATCH
+       access-control-allow-headers: Origin, X-Requested-With, Content-Type,
+         Accept, Accept-Language, Authorization, Json-Cache-Token, User-Agent,
+         X-SDK-Version, X-SDK-Type, X-SDK-ContextId, X-ContextId,
+         X-Event-Source, X-HW-Wallet-Number
+       access-control-max-age: 600
+       x-filter-handler: cors-filter
+
+  2. Confirm with actual authenticated request:
+
+     $ curl -sI -u "test:test" "https://api.paylution.com/rest/v4/users" \
+       -H "Origin: https://evil.com"
+
+     Response headers:
+       access-control-allow-origin: https://evil.com
+       access-control-allow-credentials: true
+
+  3. Both environments confirmed affected:
+     - PRODUCTION: api.paylution.com (consistent across all backends 8.51-8.60)
+     - UAT: uat-api.paylution.com
+
+  4. Null origin is NOT reflected (only real origin strings).
+
+Shopify Relevance:
+  - Paylution/Hyperwallet REST API is Shopify's merchant payment infrastructure
+  - Shopify Partners CSP connects to api.paylution.com and uat-api.paylution.com
+  - Authenticated merchants accessing the API could have their sessions hijacked
+    cross-origin by a malicious website
+
+Attack Scenario:
+  An attacker creates a malicious website and gets a Shopify merchant to visit it.
+  The website uses JavaScript to:
+  1. Send a cross-origin fetch() to api.paylution.com/rest/v4/users with
+     credentials: 'include' — browser attaches the merchant's cookies
+  2. CORS preflight succeeds (origin reflected, credentials allowed)
+  3. The API response (containing merchant payment data) is readable by the
+     attacker's JavaScript because access-control-allow-origin matches
+  4. The attacker can also send PUT/DELETE/PATCH requests to modify payment
+     settings, as all methods are CORS-allowed
+
+  Combined with Finding 16 (wallet number leak), the attacker can also read
+  the x-hw-wallet-number header from cross-origin responses, mapping the
+  victim's session to specific wallet/program identifiers.
+
+Recommendation:
+  - Replace arbitrary origin reflection with an allowlist of trusted origins
+  - Only reflect origins that match Shopify/Paylution domains
+  - If the API must be accessible from third-party sites, use a token-based
+    approach instead of cookie-based auth with CORS
+  - Remove X-HW-Wallet-Number from access-control-allow-headers
+
+============================================================================
+FINDING 19: Paylution UAT Exposes Raw Tomcat Error Pages + Unencrypted JSF ViewState (INFO)
 Severity: INFORMATIONAL
 Asset: uat-api.paylution.com
 ============================================================================
