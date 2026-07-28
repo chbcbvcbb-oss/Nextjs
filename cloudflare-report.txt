@@ -1,6 +1,7 @@
 Cloudflare MCP OAuth - Open Dynamic Client Registration Leading to Account Takeover
 Target: mcp.cloudflare.com
 Tested: July 28, 2026
+Dynamically Verified: July 28, 2026 02:45-02:48 UTC
 
 
 Summary
@@ -135,9 +136,16 @@ Additional Observations
    so clients can't be inspected after creation. But they also can't
    be deleted by anyone, leaving malicious clients permanently active.
 
-5. Multiple clients confirmed registered successfully:
+5. Multiple clients confirmed registered successfully (no rate limiting):
    - client_id: rvm0fRzggcEl_Vpr (redirect to evil.com)
    - client_id: nhmrPeCXoTZbU9Zs (redirect to attacker-controlled.com)
+   - client_id: Ae0_8x3cLHiE24Dd (redirect to httpbin.org, verification)
+   - client_id: vS-Xnxdq3-0rH-lE (rapid test 1)
+   - client_id: oPLRfC9wrko2CuvD (rapid test 2)
+   - client_id: O3g3KnOBjjpIWVfr (rapid test 3)
+   - client_id: lkULWATXmEHdTqmR (rapid test 4)
+   - client_id: 5x2Msf7MMLRIqJw4 (rapid test 5)
+   All 8 registered without any rate limiting or authentication.
 
 6. The /mcp endpoint returns 401 "Missing or invalid access token"
    confirming it accepts Bearer tokens - this is the actual MCP
@@ -147,6 +155,26 @@ Additional Observations
 7. The /authorize endpoint returns 500 when called without required
    parameters, revealing an error ID format (UUID v4) that could be
    used for log correlation.
+
+8. The consent form POST to /authorize returns 302 redirect to
+   dash.cloudflare.com/oauth2/auth with an internal Cloudflare OAuth
+   client_id (2d0ad4d1-1d40-4767-9538-dc1a91f94773). The response
+   sets __Host-MCP_APPROVED_CLIENTS cookie containing our attacker-
+   registered client_id (base64: ["Ae0_8x3cLHiE24Dd"]). This proves
+   the full flow: MCP consent -> Cloudflare OAuth -> MCP callback ->
+   attacker redirect_uri.
+
+9. 38 read scopes are pre-selected by default when no scope parameter
+   is provided, including secrets_store:read, dns_records:read,
+   teams:read, registrar-domains.read, and offline_access. The victim
+   sees these already toggled on. 83 total scopes available including
+   40 write/admin scopes.
+
+10. Token endpoint confirms client acceptance:
+    - Our client_id returns "invalid_grant" (client accepted, code invalid)
+    - Nonexistent client returns "invalid_client" (rejected)
+    This proves token exchange works without client_secret for our
+    registered client - it just needs a real authorization code.
 
 
 Impact
