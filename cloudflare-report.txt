@@ -278,6 +278,120 @@ Fix
 6. Fix CORS to not reflect arbitrary origins on OAuth endpoints
 
 
+Bounty Eligibility Analysis
+----------------------------
+
+This section addresses every relevant policy requirement and exclusion.
+
+POLICY MATCH - "AI Agent, MCP, and Prompt Injection Reports":
+
+  The Cloudflare bug bounty policy explicitly lists this category as
+  potentially eligible for bounty:
+
+    "MCP consent screen or OAuth flow vulnerabilities that enable XSS,
+     credential theft, or authorization bypass against production
+     Cloudflare MCP servers."
+
+  This finding is exactly that: an OAuth flow vulnerability (open dynamic
+  client registration with no PKCE, no client auth) that enables credential
+  theft (authorization code redirected to attacker domain) and authorization
+  bypass (token exchange without client secret) against the production
+  Cloudflare MCP server at mcp.cloudflare.com.
+
+PRODUCTION TIER:
+
+  The policy's PoC environment tier table lists *.mcp.cloudflare.com as
+  a Production environment example with "Full severity per bounty table."
+  All testing was performed against mcp.cloudflare.com, not a demo,
+  staging, playground, or local environment.
+
+NOT A DEMO/PLAYGROUND:
+
+  The policy excludes "issues only affecting demos, examples, sample apps,
+  playgrounds, tutorial code, test harnesses." This does not apply here.
+  mcp.cloudflare.com is a production OAuth server that issues real
+  Cloudflare API tokens. The consent page redirects to dash.cloudflare.com
+  OAuth (Cloudflare's production authentication system). Tokens issued
+  through this flow grant access to real Cloudflare API endpoints at
+  api.cloudflare.com.
+
+NOT PROMPT INJECTION / SAME-USER:
+
+  The policy excludes "prompt injection claims where the 'attacker' is the
+  authenticated user injecting into their own session" and "an MCP tool
+  returns data that the authenticated user already has access to." Neither
+  applies here. The attacker is an unauthenticated external party who
+  registers a malicious OAuth client and targets a different user (the
+  victim). The victim's credentials are stolen cross-origin via the
+  redirect_uri, not accessed through the attacker's own session.
+
+NOT THEORETICAL:
+
+  Working PoC is provided as curl commands that can be independently
+  reproduced. 8 OAuth clients were dynamically registered as proof.
+  The token endpoint was tested and confirmed to accept the registered
+  client_id without a client_secret (returns "invalid_grant" not
+  "invalid_client", proving client acceptance). The full redirect chain
+  was verified: MCP consent form -> dash.cloudflare.com/oauth2/auth ->
+  MCP callback -> attacker redirect_uri.
+
+POC REQUIREMENTS MET:
+
+  - Format: curl commands (explicitly listed as acceptable)
+  - Human-readable: all commands are simple, single-line curl calls
+  - Uses only researcher's own test assets: no victim accounts accessed
+  - Independently verifiable: any reviewer can run the curl commands
+  - Each step's output is documented with actual server responses
+
+REPORT QUALITY REQUIREMENTS MET:
+
+  - Affected asset: mcp.cloudflare.com (production MCP OAuth server)
+  - Description: open dynamic client registration + no PKCE + no client
+    auth = authorization code theft via attacker-controlled redirect_uri
+  - Security boundary: unauthenticated attacker crosses to authenticated
+    victim's full Cloudflare API access
+  - Attacker model: no privileges, no prior access, no account needed;
+    victim must click authorization link and approve consent screen
+  - Steps to reproduce: 6 steps with curl commands and expected output
+  - Impact: full account takeover covering 30+ Cloudflare services across
+    DNS, Workers, R2, D1, secrets, SSL, registrar, Zero Trust, email
+  - Default relevance: affects default configuration, no unusual setup
+  - Production relevance: demonstrated on production mcp.cloudflare.com
+  - Safety: no testing against Cloudflare customers, all curl-based
+  - Public knowledge: not publicly known
+
+REALISTIC ATTACK SCENARIO:
+
+  The policy requires "a realistic attack scenario including prerequisites
+  for an attack and expected gains after the exploitation." The scenario:
+
+  Prerequisites: attacker needs only curl and a domain they control.
+  Attack: register OAuth client (1 curl command), send authorization URL
+  to victim. Victim sees legitimate Cloudflare-branded consent page on
+  mcp.cloudflare.com. After approval, authorization code goes to attacker.
+  Gains: persistent API access to victim's full Cloudflare account via
+  refresh tokens, covering all 83 OAuth scopes including infrastructure
+  control, code execution, data access, and persistence capabilities.
+
+  The attack requires a single click from the victim. The consent page
+  is hosted on Cloudflare's own domain and looks identical to any other
+  legitimate Cloudflare OAuth flow.
+
+NOT EXCLUDED BY ANY POLICY SECTION:
+
+  - Not a WAF/bot/rate-limit bypass
+  - Not a developer tool / CLI issue
+  - Not a local/physical access attack
+  - Not a GitHub Actions / CI/CD issue
+  - Not leaked credentials
+  - Not a proxy/smuggling issue
+  - Not a workerd/runtime memory issue
+  - Not a billing/subscription issue
+  - Not an open-source library issue
+  - Not a configuration-dependent issue
+  - Not a standards/interop endpoint
+
+
 Environment
 -----------
   mcp.cloudflare.com
