@@ -1,0 +1,185 @@
+Anthropic Bug Bounty - Reconnaissance Findings
+Target: claude.ai, console.anthropic.com, api.anthropic.com, platform.claude.com
+Tested: July 28, 2026
+
+
+Summary
+-------
+Conducted external reconnaissance across all in-scope Anthropic assets.
+The production infrastructure is well-hardened - strong CSP, properly
+configured CORS, Cloudflare WAF on claude.ai, HttpOnly/Secure cookies,
+HSTS with preload. No critical or high severity vulnerabilities found
+from external curl-based testing.
+
+Several informational findings related to internal infrastructure
+disclosure and staging environment exposure are documented below.
+
+
+Finding 1 - Internal Infrastructure Domain Disclosure (Low/Info)
+-----------------------------------------------------------------
+Multiple internal domains and infrastructure details are exposed through
+HTTP redirects and CSP headers on publicly accessible endpoints.
+
+Discovered domains:
+  - antspace.dev - Anthropic's internal platform (all subdomains behind
+    Google IAP with client_id 364703798326-3hu6nnc7mgf799s29di7u8ivhrktdk21)
+  - orbit.antspace.dev - Internal tool namespace
+  - admin-deprecated.orbit.antspace.dev - Deprecated admin panel
+
+Proof:
+  curl -sI "https://admin.ant.dev"
+  Location: https://admin-deprecated.orbit.antspace.dev/
+
+  curl -sI "https://admin-deprecated.orbit.antspace.dev"
+  Location: https://accounts.google.com/o/oauth2/v2/auth?client_id=364703798326-3hu6nnc7mgf799s29di7u8ivhrktdk21.apps.googleusercontent.com&...
+
+All antspace.dev subdomains (api, admin, staging, internal, app,
+dashboard) resolve and redirect to Google IAP. Domain names reveal
+internal tool naming and organizational structure.
+
+
+Finding 2 - Multiple Google IAP Client IDs Exposed (Info)
+----------------------------------------------------------
+Four distinct Google Cloud IAP client IDs are exposed through OAuth
+redirect URLs on internal tool endpoints:
+
+  forge.ant.dev (production):
+    client_id: 246852548382-76jn6j66uer91ltut23ktq72nbnu09kr
+
+  forge.staging.ant.dev (staging):
+    client_id: 634400838013-6j1dsnqbb7fdg13tqhg35ocflnnu93u8
+
+  staging.ant.dev:
+    client_id: 758797485093-0bopuvtu6vsu6ra0q5u0ppsku2dootfc
+
+  antspace.dev (all subdomains):
+    client_id: 364703798326-3hu6nnc7mgf799s29di7u8ivhrktdk21
+
+Proof:
+  curl -sI "https://forge.ant.dev"
+  Location: https://accounts.google.com/o/oauth2/v2/auth?hd=anthropic.com&client_id=246852548382-...
+
+  curl -sI "https://forge.staging.ant.dev"
+  Location: https://accounts.google.com/o/oauth2/v2/auth?hd=anthropic.com&client_id=634400838013-...
+
+All endpoints enforce hd=anthropic.com (Anthropic domain restriction).
+The IAP redirect URIs point to iap.googleapis.com (Google-controlled).
+Client IDs alone are not directly exploitable but reveal GCP project
+structure and could assist in targeted phishing against employees.
+
+
+Finding 3 - Cloudflare Access Configuration Leak on Staging (Low)
+------------------------------------------------------------------
+The staging instance at claude-ai.staging.ant.dev exposes detailed
+Cloudflare Access configuration including audience IDs and team domain.
+
+Proof:
+  curl -s "https://claude-ai.staging.ant.dev/.well-known/cloudflare-access-protected-resource/"
+
+  Response:
+  {
+    "resource": "https://claude-ai.staging.ant.dev",
+    "protected": true,
+    "team_domain": "anthropic.cloudflareaccess.com",
+    "authorization_servers": ["https://anthropic.cloudflareaccess.com"]
+  }
+
+The login redirect also includes a JWT meta token (unsigned, base64)
+containing:
+  - Cloudflare Access audience ID: 4464437dbdb780c7ff7c63bc8c61a33bfe144ae51a49677c8d261f0cad625549
+  - JWT signing key ID: e2e7552813396064fecf206f6e588e0cee9038cd3e6c3f5f38deb9a2811b4459
+  - App session hash
+  - Cloudflare Access team domain: anthropic.cloudflareaccess.com
+
+
+Finding 4 - Staging Environment CSP Reveals Internal Tools (Low)
+-----------------------------------------------------------------
+staging.claude.com returns a CSP header that includes references to
+internal staging infrastructure not present in the production CSP:
+
+  frame-ancestors includes:
+    https://forge.staging.ant.dev (internal staging tool)
+    chrome-extension://dihbgbndebgnbjfmelmegjepbnkhlgni (Chrome extension)
+
+Production CSP does not include these values.
+
+Proof:
+  curl -sI "https://staging.claude.com"
+  content-security-policy: ... frame-ancestors 'self' https://forge.staging.ant.dev chrome-extension://dihbgbndebgnbjfmelmegjepbnkhlgni; ...
+
+The Chrome extension ID could be the Claude extension or an internal
+development tool.
+
+
+Finding 5 - Build Metadata Disclosure (Info)
+---------------------------------------------
+Both production and staging environments expose build metadata in HTML
+data attributes:
+
+Production (claude.ai):
+  data-build-id="20d9aa4742"
+  data-git-hash="20d9aa474237b1cc7f12faa3471d142703130109"
+  data-build-timestamp="1784947364"
+  data-version="1.0.0"
+
+Staging (claude-ai.staging.ant.dev):
+  data-build-id="da8c2a08d4"
+  data-git-hash="da8c2a08d43a22f94ec54433d86a5b35ca44fc50"
+  data-build-timestamp="1785195821"
+  data-version="1.0.0"
+  data-env="staging"
+
+Build timestamps show staging is ~3 days ahead of production
+(July 27 vs July 23). Git hashes could be used to identify specific
+commits if the repo were accessible.
+
+
+Finding 6 - anthropic-device-id Cookie Missing HttpOnly (Info)
+---------------------------------------------------------------
+platform.claude.com sets a device tracking cookie without HttpOnly:
+
+  Set-Cookie: anthropic-device-id=<uuid>; Path=/; Expires=<11 months>;
+    Secure; SameSite=lax
+
+The activitySessionId cookie on the same domain does have HttpOnly.
+The device ID is accessible to JavaScript, which could be used for
+cross-site tracking if combined with an XSS vulnerability.
+
+
+Negative Findings (What's Properly Secured)
+--------------------------------------------
+- CORS on api.anthropic.com: only reflects whitelisted origins
+  (console.anthropic.com, platform.claude.com). Evil origins get
+  access-control-allow-credentials: true but no allow-origin header,
+  so browsers block cross-origin reads.
+
+- CORS on api-staging.anthropic.com: same proper whitelist behavior.
+
+- CSP on claude.ai: strict nonce-based, no unsafe-inline/eval on
+  main domain. Frame-src limited to cloudflare challenges.
+
+- Cookies on claude.ai: HttpOnly, Secure, SameSite=None with proper
+  __Host- prefixes on sensitive cookies.
+
+- No open redirects found on /login, /oauth/callback, /magic-link.
+
+- No exposed GraphQL introspection on production endpoints.
+
+- No leaked API keys or credentials in public GitHub repos (only
+  .env.example files with placeholder values).
+
+- All internal tools (forge, staging, admin) behind Google IAP or
+  Cloudflare Access with proper domain restrictions.
+
+- Wildcard DNS on claude.com and claude.ai means 502 subdomains are
+  not subdomain takeover targets (random subdomains also get 502).
+
+- api.anthropic.com returns proper error structure with request IDs
+  but no stack traces or internal details.
+
+
+---
+
+All testing was curl-based, no browser, no automated scanners.
+No testing was performed against Cloudflare customers or other users'
+accounts. Only researcher-controlled test data was used.
