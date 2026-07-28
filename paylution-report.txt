@@ -1,6 +1,7 @@
 Paylution (Hyperwallet) - Vulnerability Report
 Target: api.paylution.com / uat-api.paylution.com
 Tested: July 27-28, 2026
+Re-verified: July 28, 2026 02:04 UTC - all findings confirmed active
 
 
 ## 1 - CORS Misconfiguration on REST API (High)
@@ -28,7 +29,8 @@ With auth:
   access-control-allow-credentials: true
 
 Tested across all backends (x-server 8.51-8.60), consistently reflected.
-Both prod and UAT affected. Null origin not reflected.
+Both prod and UAT affected. UAT server now at version 73.179 (was 73.91).
+Null origin not reflected.
 
 Impact: malicious site can read authenticated API responses cross-origin.
 All methods allowed so attacker can also modify data via PUT/DELETE/PATCH.
@@ -107,6 +109,11 @@ Not all usernames return a wallet number (admin, shopify, merchant, system
 return nothing), which means the API resolves program assignments before
 auth validation.
 
+Re-test note: same username (test:test) returned different wallet numbers
+on different requests to 8.56: 943202231685, 213989811681, 3450004.
+This suggests the backend may be leaking wallet numbers from different
+merchant programs depending on internal state/timing.
+
 
 ## 5 - Login Form Missing CSRF Token (Low)
 
@@ -127,7 +134,7 @@ An attacker can submit login requests from any page.
 x-server header reveals backend versions on every REST API response:
 
   Production: 8.51, 8.52, 8.53, 8.54, 8.55, 8.56, 8.57, 8.58, 8.59, 8.60
-  UAT: 73.91
+  UAT: 73.91 (now 73.179 as of July 28 re-test)
 
 Shows at least 10 backends on prod and release cadence differences.
 
