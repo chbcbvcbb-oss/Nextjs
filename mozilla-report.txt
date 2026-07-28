@@ -1,0 +1,367 @@
+Mozilla Bug Bounty - Web Vulnerability Findings
+Target: Mozilla Web Properties (HackerOne)
+Tested: July 28, 2026
+
+
+Finding 1 - Firefox Accounts Profile API CORS Misconfiguration (High)
+----------------------------------------------------------------------
+profile.accounts.firefox.com reflects arbitrary origins in the
+Access-Control-Allow-Origin header on all API endpoints. The preflight
+response also allows the Authorization header, meaning any website can
+send Bearer token requests cross-origin.
+
+Affected endpoints:
+  /v1/profile (full user profile including email, display name, uid)
+  /v1/email (user email)
+  /v1/uid (user ID)
+  /v1/display_name
+  /v1/avatar
+
+Proof:
+
+  curl -sI "https://profile.accounts.firefox.com/v1/profile" \
+    -H "Origin: https://evil.com"
+
+  Response headers:
+    access-control-allow-origin: https://evil.com
+    access-control-expose-headers: WWW-Authenticate,Server-Authorization,Timestamp,Accept-Language
+    vary: origin
+
+  Preflight:
+  curl -sI -X OPTIONS "https://profile.accounts.firefox.com/v1/profile" \
+    -H "Origin: https://evil.com" \
+    -H "Access-Control-Request-Method: GET" \
+    -H "Access-Control-Request-Headers: Authorization"
+
+  Response:
+    access-control-allow-origin: https://evil.com
+    access-control-allow-methods: GET
+    access-control-allow-headers: Accept,Authorization,Content-Type,If-None-Match,sentry-trace,baggage,fxa-ci
+    access-control-max-age: 86400
+
+The API uses Bearer token authentication only, not cookies. There is
+no access-control-allow-credentials header. This means the browser
+won't attach cookies automatically. However:
+
+  - If a Bearer token is obtained through any other vulnerability
+    (XSS on accounts.firefox.com, token leakage, OAuth flow issue),
+    any attacker website can silently read the victim's full profile
+    including email address, display name, and user ID.
+  - The Authorization header being allowed in preflight means tokens
+    can be sent from JavaScript on any domain.
+  - FxA supports implicit OAuth flow (response_type=token) per their
+    OpenID configuration. If an open redirect exists on accounts.firefox.com
+    the token could leak via Referer headers, and this CORS config would
+    let the attacker read profile data.
+
+Impact: Combined with a token leak, full account profile disclosure
+from any website. The profile API exposes user email, display name,
+avatar URL, and internal user ID.
+
+Severity: High likelihood chaining scenario. The CORS config itself is
+the enabler - it removes the same-origin protection that would
+otherwise prevent cross-origin token use.
+
+
+Finding 2 - Firefox Accounts Email Enumeration (Medium)
+--------------------------------------------------------
+The account status endpoint at api.accounts.firefox.com discloses
+whether any email address has a registered Firefox Account.
+
+Proof:
+
+  curl -s -X POST "https://api.accounts.firefox.com/v1/account/status" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"admin@mozilla.com"}'
+
+  Response: {"exists":true}
+
+  curl -s -X POST "https://api.accounts.firefox.com/v1/account/status" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"nonexistent@test.com"}'
+
+  Response: {"exists":false}
+
+No authentication required. No rate limiting observed across multiple
+rapid requests. The endpoint accepts any email and returns a definitive
+true/false.
+
+Impact: Allows mass enumeration of Firefox Accounts. An attacker can
+check whether specific email addresses have Firefox Accounts, useful
+for targeted phishing or credential stuffing against accounts known to
+exist. Combined with known email breaches, this narrows target lists
+to active Firefox users.
+
+
+Finding 3 - Bugzilla REST API CORS Allows Authentication Headers (High)
+------------------------------------------------------------------------
+bugzilla.mozilla.org REST API has CORS configured with:
+  - access-control-allow-origin: * (any origin)
+  - access-control-allow-headers includes authentication headers:
+    x-bugzilla-api-key, x-bugzilla-login, x-bugzilla-password,
+    x-bugzilla-token
+
+This means any website can make authenticated requests to the Bugzilla
+REST API if it has a user's API key.
+
+Proof:
+
+  curl -sI -X OPTIONS "https://bugzilla.mozilla.org/rest/bug" \
+    -H "Origin: https://evil.com" \
+    -H "Access-Control-Request-Method: GET" \
+    -H "Access-Control-Request-Headers: X-Bugzilla-API-Key"
+
+  Response:
+    access-control-allow-origin: *
+    access-control-allow-methods: GET, POST
+    access-control-allow-headers: accept, content-type, origin, user-agent,
+      x-requested-with, x-bugzilla-login, x-bugzilla-api-key,
+      x-phabricator-token, x-bugzilla-password, x-bugzilla-token
+
+Additionally, Bugzilla supports JSONP via a callback parameter:
+
+  curl -s "https://bugzilla.mozilla.org/rest/bug/1830029?callback=test_func"
+
+  Response: /**/test_func({"faults":[],"bugs":[{...}]})
+
+  Content-Type: application/json with X-Content-Type-Options: nosniff
+  limits script tag exploitation, but the callback wrapping still occurs.
+
+Attack scenario: If a Bugzilla API key is leaked (in source code, logs,
+config files, or via XSS), any website the victim visits can silently
+query the Bugzilla REST API using that API key and read private security
+bugs, internal bug discussions, and attachment data. The CORS
+configuration allows this by permitting the API key header from any
+origin. Bugzilla hosts Mozilla's security vulnerability reports, making
+this a high-value target.
+
+The JSONP support also creates a secondary risk: script tags bypass
+CORS entirely and send cookies, though the nosniff header currently
+blocks browsers from executing application/json as JavaScript.
+
+Impact: If an API key is compromised through any means, CORS removes
+the browser's same-origin protection that would otherwise prevent
+unauthorized cross-origin access to private bug data including security
+vulnerabilities.
+
+
+Finding 4 - TaskCluster Secret Names Publicly Enumerable (Medium)
+------------------------------------------------------------------
+firefox-ci-tc.services.mozilla.com (Mozilla's TaskCluster instance)
+allows anonymous users to list all 374 secret names stored in the
+secrets service. While the secret values cannot be read without
+authentication, the names alone reveal sensitive infrastructure details.
+
+Proof:
+
+  curl -s "https://firefox-ci-tc.services.mozilla.com/api/secrets/v1/secrets"
+
+  Response includes 374 secret names. Selected examples:
+    gecko/gfx-github-sync/token
+    gecko/rlbox-github-sync/token
+    l10n/level-3/automation-bot-token
+    project/adhoc/adhoc-github-clone-ssh
+    project/bhr/aggregation-gcp-key
+    project/gecko/level-any/firefox-android/fenix/firebase
+    project/mobile/firefox-ios/firebase
+    project/releng/gecko/build/level-3/google-oauth-api.key
+    project/releng/gecko/build/level-3/partner-github-ssh
+    project/updatebot/3/ai-api-key
+    project/updatebot/3/bugzilla-api-key
+    project/updatebot/3/database-password
+    project/updatebot/3/phabricator-token
+    project/taskcluster/docker-worker/certificate-key
+    repo:github.com/mozilla-releng/balrog:s3-prod-aws-creds
+
+The anonymous role also includes:
+  - secrets:list-secrets (list all secret names)
+  - auth:get-client:* (read any client config)
+  - auth:get-role:* (read any role definition)
+  - hooks:get:* (read any hook config)
+  - queue:get-task:* (read any task)
+  - queue:get-artifact:public/* (download public artifacts)
+
+Total worker pools exposed: 390
+Total hook groups: 22
+Total roles: 986
+
+Impact: Secret names reveal the organizational structure of Mozilla's
+CI/CD pipeline, the specific services used (Firebase, GCP, Sentry,
+Phabricator, Bugzilla), and credential naming conventions. This
+information helps an attacker target specific secrets if they gain
+elevated access. The naming convention (level-1/level-2/level-3)
+reveals the tiered permission model.
+
+
+Finding 5 - Phabricator Internal Hostname Disclosure (Low)
+-----------------------------------------------------------
+Both the development and staging Phabricator instances expose internal
+AWS EC2 hostnames through the conduit.ping API endpoint.
+
+Proof:
+
+  curl -s "https://phabricator-dev.allizom.org/api/conduit.ping" -d "output=json"
+
+  Response:
+    {"result":"ip-172-31-60-19.us-west-2.compute.internal","error_code":null,"error_info":null}
+
+  curl -s "https://phabricator.allizom.org/api/conduit.ping" -d "output=json"
+
+  Response:
+    {"result":"ip-10-139-189-105.us-west-2.compute.internal","error_code":null,"error_info":null}
+
+No authentication required.
+
+Impact: Reveals internal IP addresses (172.31.x.x and 10.139.x.x) and
+AWS region (us-west-2). The 172.31.x.x address is in the default VPC
+range. An attacker with SSRF access could target these hosts directly.
+
+
+Finding 6 - Pocket Admin API GraphQL Endpoint Exposed (Medium)
+---------------------------------------------------------------
+admin-api.getpocket.com exposes a GraphQL endpoint with CORS: * from
+any origin. While authentication is required to execute queries, the
+endpoint is publicly accessible and the server reveals its framework.
+
+Proof:
+
+  curl -s "https://admin-api.getpocket.com/graphql" \
+    -H "Content-Type: application/json" \
+    -H "apollo-require-preflight: true" \
+    -d '{"query":"{ __schema { queryType { name } } }"}'
+
+  Response:
+    {"errors":[{"message":"Context creation failed: Internal server error","extensions":{"code":"INTERNAL_SERVER_ERROR"}}]}
+
+  CORS headers on admin-api.getpocket.com:
+    access-control-allow-origin: *
+    x-powered-by: Express
+
+The admin API name suggests administrative functionality. CORS: * means
+any website can send authenticated GraphQL requests if a session token
+or API key is available.
+
+The CSRF protection message when Content-Type is not set reveals the
+framework:
+
+  "This operation has been blocked as a potential Cross-Site Request Forgery
+   (CSRF). Please either specify a 'content-type' header (with a type that
+   is not one of application/x-www-form-urlencoded, multipart/form-data,
+   text/plain) or provide a non-empty value for one of the following
+   headers: x-apollo-operation-name, apollo-require-preflight"
+
+Impact: The admin GraphQL API is reachable from any origin. Combined
+with token leakage this would allow cross-origin admin operations.
+The "admin-api" naming and Express/Apollo stack information aids
+targeted attacks.
+
+
+Finding 7 - Firefox Accounts OAuth Token Endpoint CORS (Medium)
+-----------------------------------------------------------------
+oauth.accounts.firefox.com has CORS: * on the token endpoint, allowing
+any website to interact with the OAuth token exchange.
+
+Proof:
+
+  curl -sI -X OPTIONS "https://oauth.accounts.firefox.com/v1/token" \
+    -H "Origin: https://evil.com" \
+    -H "Access-Control-Request-Method: POST" \
+    -H "Access-Control-Request-Headers: Content-Type"
+
+  Response:
+    access-control-allow-origin: *
+    access-control-allow-methods: POST
+    access-control-allow-headers: Accept,Authorization,Content-Type,If-None-Match,sentry-trace,baggage,fxa-ci
+    access-control-max-age: 86400
+
+The FxA OpenID configuration confirms:
+  - response_types_supported: ["code", "token"]
+  - token_endpoint_auth_methods_supported: ["client_secret_post"]
+
+The implicit flow (response_type=token) is supported. No dynamic client
+registration is available (POST /v1/client returns 404), and
+client_secret_post is required for token exchange, which limits
+exploitation.
+
+Impact: The CORS: * on the token endpoint means the token exchange can
+be initiated from any website. While client_secret is required,
+first-party Mozilla clients that use this endpoint may have their
+client secrets exposed in open-source code or browser devtools.
+
+
+Finding 8 - Balrog Update Server Exposes Internal Configuration (Low)
+----------------------------------------------------------------------
+aus5.mozilla.org (Balrog) exposes the complete Firefox update
+infrastructure configuration without authentication, including all
+update rules, release mappings, and internal release metadata.
+
+Proof:
+
+  curl -s "https://aus5.mozilla.org/api/v1/releases"
+
+  Response: 9,281 release entries
+
+  curl -s "https://aus5.mozilla.org/api/v1/rules"
+
+  Response: 557 update rules with product, channel, and mapping details
+
+  Rules include internal channel names and release mappings:
+    rule_id: 17669 product: Firefox channel: pinebuild-nightly-test
+    rule_id: 18087 product: Firefox channel: esr
+
+  curl -s "https://aus5.mozilla.org/api/v1/emergency_shutoff"
+
+  Response: {"count":0,"shutoffs":[]}
+
+Impact: Exposes internal channel naming conventions, release timing,
+and the complete update infrastructure. An attacker could monitor
+release schedules, identify internal test channels, and understand the
+update pipeline. The emergency shutoff endpoint reveals whether any
+products have updates suspended.
+
+
+Negative Findings (Properly Secured)
+-------------------------------------
+- CORS on api.accounts.firefox.com: no CORS headers returned at all.
+  Authentication endpoints properly locked down.
+
+- FxA OAuth redirect_uri: validated against registered clients. Evil
+  redirect_uri does not cause an open redirect.
+
+- FxA no dynamic client registration: POST /v1/client returns 404.
+
+- VPN backend (vpn.mozilla.org): all API endpoints return 401, no CORS
+  headers. Properly locked down.
+
+- AMO admin: redirects to addons-internal.stage.mozaws.net which
+  returns 403. Reviewer panel also 403.
+
+- Crash stats: PII fields (email, user_comments, url) not returned in
+  anonymous API queries.
+
+- Remote Settings (firefox.settings.services.mozilla.com): read-only
+  mode, write attempts produce no response. Properly restricted.
+
+- TaskCluster secrets: names listed but values return 403
+  (InsufficientScopes). Read access properly restricted.
+
+- Pontoon: CSRF token present in forms (Django csrfmiddlewaretoken).
+  Session cookies have HttpOnly, SameSite=lax, Secure.
+
+- Bugzilla private bugs: security-group bugs return proper access
+  denied, not leaked to anonymous users.
+
+- Firefox Relay: no CORS on API endpoints. Proper auth required.
+
+- Support (SUMO): no CORS on API endpoints.
+
+- Subdomain takeover: wildcard DNS on mozgcp.net, firefox.com means
+  502 responses are not takeover targets.
+
+
+---
+
+All testing was curl-based from external network. No browser, no
+automated scanners, no authenticated testing. Used staging instances
+where instructed by program scope. X-HackerOne-Research header set
+on Relay requests as requested.
