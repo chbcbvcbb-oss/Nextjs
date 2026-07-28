@@ -1,0 +1,281 @@
+Hyperwallet (Paylution) - Multiple Vulnerabilities Leading to Full Account Takeover Chain
+Target: api.paylution.com / uat-api.paylution.com
+Platform: Hyperwallet merchant payout portal (PayPal subsidiary)
+Tested: July 27-28, 2026
+
+
+Summary
+-------
+Found a chain of vulnerabilities on the Hyperwallet/Paylution REST API and
+web portal that together allow an attacker to compromise merchant accounts
+on the payment platform. The CORS misconfiguration is the core issue - it
+lets any website read and write authenticated API data cross-origin. Combined
+with no rate limiting on auth endpoints and pre-auth information leakage,
+this creates a realistic account takeover path.
+
+
+Attack Chain
+------------
+1. Attacker sets up a page that makes cross-origin requests to the REST API
+2. CORS reflects attacker's origin with credentials=true, so browser sends
+   cookies and auth headers automatically
+3. Attacker reads /rest/v4/users, /rest/v4/payments, /rest/v4/bank-accounts
+   to pull victim's financial data, PII, and payout history
+4. All HTTP methods are allowed (PUT/DELETE/PATCH) so attacker can also
+   modify bank account details to redirect payouts
+5. If attacker needs to escalate, the brute force path is open - no rate
+   limiting, no captcha enforcement, ~8600 attempts/hour sustained
+6. Wallet numbers leaked via response headers (even on 401) help attacker
+   enumerate valid merchant programs before attempting auth
+
+
+Finding 1 - CORS Reflects Arbitrary Origin with Credentials (Critical)
+-----------------------------------------------------------------------
+The entire REST API v4 reflects any Origin header and sets
+Access-Control-Allow-Credentials: true. This is the textbook dangerous
+CORS misconfiguration - it defeats same-origin policy completely.
+
+Every endpoint is affected: users, programs, payments, transfers,
+bank-accounts, webhook-notifications.
+
+Proof:
+
+  curl -sI -X OPTIONS "https://api.paylution.com/rest/v4/users" \
+    -H "Origin: https://attacker.com" \
+    -H "Access-Control-Request-Method: GET"
+
+  Response headers:
+    access-control-allow-origin: https://attacker.com
+    access-control-allow-credentials: true
+    access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS, PATCH
+    access-control-allow-headers: Origin, X-Requested-With, Content-Type,
+      Accept, Accept-Language, Authorization, Json-Cache-Token, User-Agent,
+      X-SDK-Version, X-SDK-Type, X-SDK-ContextId, X-ContextId,
+      X-Event-Source, X-HW-Wallet-Number
+    access-control-max-age: 600
+
+With Basic auth (simulating logged-in user):
+
+  curl -sI -u "test:test" "https://api.paylution.com/rest/v4/users" \
+    -H "Origin: https://attacker.com"
+
+  Response headers:
+    access-control-allow-origin: https://attacker.com
+    access-control-allow-credentials: true
+
+Consistent across all 10 production backends (x-server 8.51 through 8.60).
+UAT (uat-api.paylution.com, x-server 73.179) also affected.
+Only null origin is not reflected.
+
+Impact: any website can silently read and modify a logged-in merchant's
+financial data, payment history, bank accounts, and personal information
+through the REST API. All HTTP methods are allowed so this is full
+read+write access, not just data exfiltration.
+
+
+Finding 2 - No Rate Limiting on Authentication (High)
+-----------------------------------------------------
+Both the web login form and REST API Basic auth have zero rate limiting.
+The login page loads hCaptcha but the server never validates the token -
+POST requests without any captcha parameter are accepted.
+
+Web login:
+
+  curl -X POST "https://api.paylution.com/hw2web/_login" \
+    -d "loginId=test@test.com&password=wrong"
+
+  No lockout, no delay, no 429 response after any number of failures.
+  50 concurrent requests all processed in ~2 seconds (~41ms each).
+
+REST API:
+
+  50 concurrent requests to /rest/v4/users with different credentials
+  all returned 401 in ~2 seconds total. No blocking at any point.
+
+Sustained rate: ~8600 login attempts per hour from a single IP.
+Both production and UAT affected.
+
+This directly enables credential stuffing against the payment portal.
+Chained with the CORS issue, an attacker could also brute force API
+credentials from a victim's browser session.
+
+
+Finding 3 - Session ID Leakage via URL Path (High)
+---------------------------------------------------
+The portal embeds JSESSIONID values directly in URL paths for every
+resource loaded on the page. The session cookie is set with HttpOnly
+and Secure flags, but the same session ID is exposed in cleartext URLs.
+
+Example from page source:
+
+  /hw2web/javax.faces.resource/jquery-3.5.1.min.js.xhtml;jsessionid=45b1fb3ee9cbeafc94026a4c29fc?ln=js
+
+Confirmed on UAT login page:
+
+  curl -s "https://uat-api.paylution.com/hw2web/sso/login" | \
+    grep -o 'jsessionid=[^"?&;]*' | head -1
+
+  jsessionid=6781c64e74dab034927c367f0482
+
+The Set-Cookie header marks it HttpOnly:
+
+  Set-Cookie: JSESSIONID=459cb8b3f848b3799f22e06b1abf; Path=/hw2web; Secure; HttpOnly
+
+But having the same value in URLs means:
+  - Leaks via Referer header to any external resource
+  - Logged in CDN/proxy/WAF access logs as part of the URL path
+  - Stored in browser history
+  - Visible to browser extensions with history access
+
+Session fixation tested - server does regenerate session IDs, so fixation
+is not directly exploitable. The URL leakage itself is the issue.
+
+
+Finding 4 - Pre-Auth Wallet Number Enumeration (Medium)
+-------------------------------------------------------
+The REST API returns internal wallet/program identifiers in the
+x-hw-wallet-number response header. This happens before authentication
+is validated - different usernames produce different wallet numbers
+even when the password is wrong (401 response).
+
+  curl -sI -u "test:test" "https://api.paylution.com/rest/v4/users"
+  x-hw-wallet-number: 356628091684
+
+  curl -sI -u "root:root" "https://api.paylution.com/rest/v4/users"
+  x-hw-wallet-number: 3450004
+
+  curl -sI -u "api:api" "https://api.paylution.com/rest/v4/users"
+  x-hw-wallet-number: 313690548166
+
+The value 3450004 matches the merchant config ID used in portal
+resource paths:
+
+  /hw2web/javax.faces.resource/3450004/en/triple_play.png.xhtml
+
+The leak comes from backend server 8.56 specifically. Other backends
+in the load balancer pool don't include the header. Because there's
+no rate limiting, an attacker can enumerate valid merchant program
+numbers by trying different usernames and filtering for 8.56 responses.
+
+Additional finding during re-test: the same username returned different
+wallet numbers on separate requests to 8.56:
+  test:test -> 943202231685, then 213989811681, then 3450004
+
+This means server 8.56 may be leaking wallet numbers belonging to
+different merchant programs depending on internal state, not just the
+one associated with the queried username.
+
+Some usernames (admin, shopify, merchant, system) return no wallet
+number, confirming the API resolves program assignments before checking
+the password.
+
+
+Finding 5 - Login Form Missing CSRF Protection (Low)
+-----------------------------------------------------
+The login form at /hw2web/_login has no CSRF token, no ViewState,
+and no custom header requirement:
+
+  <form id="signInForm" action="/hw2web/_login" method="POST">
+    <input name="loginId" type="text" />
+    <input name="password" type="password" />
+    <input type="submit" value="Sign In" />
+  </form>
+
+Any page can submit login requests to this form. Combined with no
+rate limiting, this enables login CSRF for credential testing from
+a victim's browser without any user interaction beyond visiting
+the attacker's page.
+
+
+Finding 6 - Backend Version Disclosure (Low)
+---------------------------------------------
+Every REST API response includes an x-server header that reveals
+the internal backend version number:
+
+Production backends observed:
+  8.51, 8.52, 8.53, 8.54, 8.55, 8.56, 8.57, 8.58, 8.59, 8.60
+
+UAT:
+  73.179 (previously 73.91 one day earlier, showing rapid release cycle)
+
+This reveals:
+  - At least 10 backends behind the load balancer on production
+  - Different release cadence between prod and UAT
+  - Specific backend versions that can be targeted (8.56 for wallet leak)
+
+An attacker can use this to fingerprint which backend they're hitting
+and selectively target the vulnerable one.
+
+
+Finding 7 - Default Tomcat Error Pages on UAT (Low)
+----------------------------------------------------
+UAT REST endpoints return raw Tomcat default error pages instead of
+custom error handlers:
+
+  curl -s "https://uat-api.paylution.com/rest/v4/webhook-notifications"
+
+Returns standard Tomcat HTML error page with default styling
+(Tahoma font, #525D76 background color, "Error report" format).
+
+POST to same endpoint returns 405 with same default Tomcat page.
+
+Confirms Tomcat as the application server and default error handling
+is not configured on the UAT environment.
+
+
+Finding 8 - Unencrypted JSF ViewState (Low)
+--------------------------------------------
+Password reset form uses plaintext numeric ViewState values:
+
+  URL: /hw2web/wallet/password/forgottenUserCredential.xhtml
+
+  javax.faces.ViewState value="-6610740879464315974:5241139955065922870"
+
+These are two 64-bit signed integers (server-side state references).
+Not encrypted or signed with HMAC. Values change per request but the
+format is fixed and predictable.
+
+While these are server-side references rather than serialized objects,
+unencrypted ViewState values can still be used to:
+  - Predict or brute force valid state tokens
+  - Replay captured states in session fixation scenarios
+
+
+---
+
+Chain Summary
+-------------
+The critical path is: CORS (Finding 1) + No Rate Limit (Finding 2)
+
+A realistic attack looks like:
+1. Victim visits attacker's page
+2. JavaScript makes fetch() to api.paylution.com/rest/v4/users with
+   credentials:include - CORS allows it from any origin
+3. Attacker reads the response containing user PII, payment data
+4. Attacker sends PUT to /rest/v4/bank-accounts to change payout
+   destination - CORS allows all methods
+5. Next merchant payout goes to attacker's bank account
+
+If the attacker doesn't have an authenticated session to steal:
+1. Use the login endpoint with no rate limiting to brute force creds
+2. ~8600 attempts/hour, no lockout, no captcha enforcement
+3. Wallet numbers from Finding 4 help identify valid merchant programs
+4. Server version from Finding 6 lets attacker target 8.56 specifically
+
+The JSESSIONID URL leak (Finding 3) provides an alternative session
+theft path through Referer header leakage to any external resource.
+
+
+Environment Details
+-------------------
+Production: api.paylution.com
+  - F5 BIG-IP WAF + Fastly CDN
+  - 10 backend servers (8.51-8.60)
+  - JSF/Facelets web framework on Tomcat
+
+UAT: uat-api.paylution.com
+  - Fastly CDN only (no WAF)
+  - Single backend (73.179)
+  - Same vulnerabilities, weaker protection
+
+All testing done with curl, no automated scanners, no browser.
