@@ -1,0 +1,437 @@
+Verisign Bug Bounty - Web Vulnerability Findings
+Target: Verisign (Bugcrowd)
+Tested: July 28, 2026
+
+
+Finding 1 - JSESSIONID Cookie Leaks Internal Server Hostnames (Medium)
+-----------------------------------------------------------------------
+registrar.verisign-grs.com sets a JSESSIONID cookie that contains the
+full internal server hostname in its value. The cookie is set on every
+request to /webwhois-ui/ and rotates across load-balanced backend
+servers, revealing the complete internal infrastructure topology.
+
+Proof:
+
+  curl -sI "https://registrar.verisign-grs.com/webwhois-ui/" | grep Set-Cookie
+
+  Responses observed across multiple requests:
+
+    Set-Cookie: JSESSIONID=<id>.webwhoisapp1.prod-wwhois.va3.vrsn.com
+    Set-Cookie: JSESSIONID=<id>.webwhoisapp2.prod-wwhois.va3.vrsn.com
+    Set-Cookie: JSESSIONID=<id>.webwhoisapp1.prod-wwhois.de3.vrsn.com
+    Set-Cookie: JSESSIONID=<id>.webwhoisapp2.prod-wwhois.de3.vrsn.com
+    Set-Cookie: JSESSIONID=<id>.webwhoisapp2.prod-wwhois.de4.vrsn.com
+
+Information disclosed per hostname:
+  - Internal domain: vrsn.com
+  - Application name: webwhoisapp (Java/Tomcat WHOIS frontend)
+  - Environment: prod-wwhois (production web whois)
+  - Datacenter codes: va3 (Virginia), de3, de4 (likely Germany/Delaware)
+  - Instance numbers: app1, app2 (two instances per datacenter)
+  - Load balancer topology: at least 3 datacenters, 2 servers each
+
+The cookie does have Secure, HttpOnly, and SameSite=Lax flags set,
+which is good. The issue is purely the hostname leakage in the
+session ID value, which appears to be Tomcat's jvmRoute session
+affinity feature with the internal FQDN used as the route identifier.
+
+Impact: An attacker learns the internal domain naming convention
+(vrsn.com), datacenter locations, application names, environment
+naming, and exact server count. This information aids targeted
+attacks if combined with SSRF or internal network access.
+
+
+Finding 2 - WHOIS REST API Bypasses Client-Side CAPTCHA (Medium)
+-----------------------------------------------------------------
+The WHOIS web application at registrar.verisign-grs.com uses Google
+reCAPTCHA on the frontend, but the backend REST API endpoint does not
+validate the CAPTCHA token. The API accepts and processes queries
+without any CAPTCHA response field.
+
+Proof:
+
+  # No captcha token, query works
+  curl -s "https://registrar.verisign-grs.com/webwhois-ui/rest/whois?q=google.com&tld=com&type=domain"
+
+  Response: {"responseType":"success","message":"Domain Name: GOOGLE.COM\n   ..."}
+
+  # 10 rapid sequential requests all succeed
+  for i in $(seq 1 10); do
+    curl -s -o /dev/null -w "%{http_code} " \
+      "https://registrar.verisign-grs.com/webwhois-ui/rest/whois?q=test$i.com&tld=com&type=domain"
+  done
+
+  Result: 200 200 200 200 200 200 200 200 200 200
+
+The JavaScript source (js/local/all.js) shows the API path as
+"rest/whois" with parameters q, tld, type, and
+grecaptcha_response_field. The reCAPTCHA is only enforced in the
+browser JavaScript - the server does not check for or validate the
+captcha response.
+
+The API supports three query types:
+  - type=domain: WHOIS lookup for domains
+  - type=registrar: registrar information lookup
+  - type=nameserver: nameserver lookup (returns IPs, registrar)
+
+No rate limiting was observed. No authentication required.
+
+Impact: Allows automated mass WHOIS queries bypassing the CAPTCHA
+protection. This enables bulk domain reconnaissance, registrar
+enumeration, and nameserver mapping at scale. The CAPTCHA exists to
+prevent exactly this type of automated abuse.
+
+
+Finding 3 - Developer Portal SAML SSO Exposes Internal Identifiers (Low)
+-------------------------------------------------------------------------
+developer.verisign.com automatically generates a SAML AuthnRequest on
+every unauthenticated visit. The SAML request and surrounding HTML
+expose internal infrastructure details without any authentication.
+
+Proof:
+
+  curl -s "https://developer.verisign.com/devhub/" | grep -o 'SAMLRequest.*value="[^"]*"'
+
+  The base64-decoded SAMLRequest contains:
+    - SAML Issuer: devhub_prod_ext_b
+    - AssertionConsumerServiceURL: https://developer.verisign.com/devhub/authenticated
+    - Internal XML namespace: http://odin.vrsn.com/
+    - Protocol: SAML 2.0 HTTP-POST binding
+    - Signature algorithm: RSA-SHA512
+
+  The SAML Extensions block contains a custom element:
+    <odin:version xmlns:odin="http://odin.vrsn.com/">v3</odin:version>
+    <odin:custom-message xmlns:odin="http://odin.vrsn.com/">
+      Portal Login Information: Access to this portal may be
+      deactivated if you do not login within a 60-day period.
+      If your login credentials are deactivated, you can reactivate
+      them by contacting Verisign Support at +1.703.925.6999 or
+      customerservice@verisign.com.
+    </odin:custom-message>
+
+  The HTML page also reveals:
+    - DOCTYPE: Thymeleaf Spring 4 (framework disclosure)
+    - SSO endpoint: login.verisign.com/SAML2/SSO/POST
+    - Account creation URL: developer.verisign.com/devhub/request
+
+Information disclosed:
+  - Internal SSO platform name: "odin" (odin.vrsn.com namespace)
+  - SSO version: v3
+  - SAML issuer naming convention: devhub_prod_ext_b
+    (app_environment_type_instance pattern)
+  - Internal support phone and email
+  - 60-day inactivity policy for portal credentials
+  - Framework: Spring 4 with Thymeleaf templates
+
+Impact: Reveals the internal SSO platform name (Odin), its version,
+the SAML issuer naming convention which implies other issuers exist
+(devhub_prod_ext_a, devhub_staging_ext_b, etc.), and the application
+framework. Combined with the JSESSIONID hostname leak, an attacker
+builds a detailed picture of the internal infrastructure.
+
+
+Finding 4 - Non-Enforced CSP on NameStudio Properties (Medium)
+---------------------------------------------------------------
+Three Verisign properties (namestudioapi.com, namestudio.com,
+namestudioforsocial.com) have Content Security Policy stored only in
+the S3 metadata header x-amz-meta-csp instead of the standard
+Content-Security-Policy header. Browsers do not recognize or enforce
+S3 metadata headers, so these sites have no effective CSP protection.
+
+Proof:
+
+  # Check for real CSP header (none returned):
+  curl -sI "https://namestudioapi.com/" | grep "^content-security-policy:"
+  (empty - no CSP header)
+
+  # CSP is only in S3 metadata:
+  curl -sI "https://namestudioapi.com/" | grep "x-amz-meta-csp:"
+  x-amz-meta-csp: default-src 'self'; font-src 'self' data:; ...
+
+  # Same for namestudio.com:
+  curl -sI "https://namestudio.com/" | grep "^content-security-policy:"
+  (empty)
+  curl -sI "https://namestudio.com/" | grep "x-amz-meta-csp:"
+  x-amz-meta-csp: default-src 'none'; form-action 'self'; ...
+
+  # And namestudioforsocial.com:
+  curl -sI "https://namestudioforsocial.com/" | grep "^content-security-policy:"
+  (empty)
+  curl -sI "https://namestudioforsocial.com/" | grep "x-amz-meta-csp:"
+  x-amz-meta-csp: default-src 'none'; form-action 'self'; ...
+
+  # Compare with verisign.com which has a real CSP:
+  curl -sI "https://www.verisign.com/" | grep "^content-security-policy:"
+  content-security-policy: default-src 'self'; base-uri 'self'; ...
+
+All three sites also have CORS: * (Access-Control-Allow-Origin: *)
+set by the S3/CloudFront configuration:
+
+  curl -sI "https://namestudioapi.com/" -H "Origin: https://evil.com" | grep access-control
+  access-control-allow-origin: *
+
+The intended CSP policies are well-written (strict-dynamic with SHA
+hashes on namestudio.com, connect-src restrictions on all three). The
+problem is purely that x-amz-meta-csp is not recognized by browsers
+as a CSP header. CloudFront can be configured to promote S3 metadata
+to standard response headers, or a Lambda@Edge function can add the
+proper Content-Security-Policy header.
+
+Impact: All XSS protections intended by the CSP are not enforced.
+Combined with CORS: *, any XSS vulnerability on these domains would
+be fully exploitable without CSP mitigation. The CSP policies exist
+in metadata, suggesting the security team wrote them but the
+deployment pipeline does not properly set them as response headers.
+
+
+Finding 5 - Weak CSP on WHOIS Application (Low)
+-------------------------------------------------
+The WHOIS application at registrar.verisign-grs.com uses a Content
+Security Policy with unsafe-eval and unsafe-inline in default-src,
+which significantly weakens XSS protections.
+
+Proof:
+
+  curl -sI "https://registrar.verisign-grs.com/webwhois-ui/rest/epp/statuscode/x" | grep content-security-policy
+
+  content-security-policy: default-src 'self' 'unsafe-eval'
+    'unsafe-inline'; script-src 'self' 'unsafe-eval' 'unsafe-inline'
+    https://www.recaptcha.net/recaptcha/
+    https://www.gstatic.com/recaptcha/;
+    frame-src https://www.recaptcha.net/recaptcha/;
+    img-src 'self' data:; connect-src 'self';
+    upgrade-insecure-requests; block-all-mixed-content;
+
+Both unsafe-eval and unsafe-inline are present in both default-src
+and script-src. This means inline scripts and eval() are permitted,
+which is the primary attack vector for XSS. The application uses
+Handlebars.compile() which requires eval (hence unsafe-eval), but
+unsafe-inline could be replaced with nonce-based or hash-based
+script loading.
+
+Impact: If an XSS vector is found in the WHOIS application, the CSP
+will not prevent exploitation. The unsafe-eval is required for
+Handlebars template compilation, but upgrading to precompiled
+Handlebars templates would eliminate this requirement.
+
+
+Finding 6 - Unhandled Exceptions on EPP Status Code Endpoint (Low)
+-------------------------------------------------------------------
+The REST endpoint rest/epp/statuscode/ at registrar.verisign-grs.com
+returns unhandled HTTP 500 errors with Tomcat default error pages for
+any input, including valid EPP status codes.
+
+Proof:
+
+  curl -s "https://registrar.verisign-grs.com/webwhois-ui/rest/epp/statuscode/clientHold"
+
+  Response:
+  <!doctype html><html lang="en"><head>
+  <title>HTTP Status 500 - Internal Server Error</title>
+  <style type="text/css">body {font-family:Tahoma,Arial,sans-serif;}
+  h1, h2, h3, b {color:white;background-color:#525D76;}
+  ...
+
+  curl -s "https://registrar.verisign-grs.com/webwhois-ui/rest/epp/statuscode/"
+  (same 500 response)
+
+The Tomcat default error page styling (Tahoma font, #525D76 blue) is
+returned rather than a custom error page. This confirms:
+  - Backend: Apache Tomcat (default error page CSS)
+  - Frontend: Apache HTTP Server (Server: Apache header)
+  - The endpoint exists but is broken/misconfigured
+
+Impact: Confirms the application server type and indicates a
+misconfigured or broken endpoint. The default Tomcat error page
+should be replaced with a custom error handler that does not reveal
+server technology.
+
+
+Finding 7 - HTTP Redirect on HTTPS Site (Low)
+----------------------------------------------
+registrar.verisign-grs.com redirects all unmatched paths to an HTTP
+(not HTTPS) URL, creating a potential downgrade opportunity.
+
+Proof:
+
+  curl -sI "https://registrar.verisign-grs.com/nonexistent" | grep Location
+
+  Location: http://www.verisigninc.com/en_US/products-and-services/register-domain-names/whois/index.xhtml
+
+The redirect target uses http:// instead of https://. While HSTS is
+set on registrar.verisign-grs.com (max-age=15768000; includeSubDomains;
+preload), the redirect target is verisigninc.com which is a different
+domain. If verisigninc.com is not in the HSTS preload list, the first
+request to it will be over plaintext HTTP.
+
+The verisigninc.com domain itself redirects to verisign.com:
+  curl -sI "http://www.verisigninc.com/" | grep Location
+  Location: https://www.verisign.com/
+
+So there is a chain: HTTPS -> HTTP -> HTTPS. The middle hop is
+plaintext and susceptible to MITM interception.
+
+Impact: A user clicking a link or being redirected from a 404 on the
+WHOIS app will briefly connect over plaintext HTTP to verisigninc.com
+before being redirected to HTTPS verisign.com. An active network
+attacker could intercept and modify the response during this window.
+
+
+Finding 8 - Backend Service Discovery via CSP Metadata (Info)
+--------------------------------------------------------------
+The x-amz-meta-csp and x-amz-meta-link headers on NameStudio
+properties enumerate internal backend services, API endpoints, and
+infrastructure components that are not publicly documented.
+
+Services discovered from CSP connect-src and script-src-elem:
+
+  From namestudioapi.com:
+    nsw-config.verisign.com   - CloudFront + S3 (config service)
+    nsw-service.verisign.com  - CloudFront + S3 (service layer)
+    nsw-api.verisign.com      - AWS ALB (API gateway, 403)
+    sugapi.verisign-grs.com   - Apache (suggestion API, redirects to namestudioapi.com)
+
+  From namestudio.com:
+    nswm-service.verisign.com - CloudFront + S3 (mobile/managed service)
+    api.namestudio.com        - AWS ALB (API, 403)
+
+  From x-amz-meta-link headers:
+    nswm-service.verisign.com/3.0/name-studio.js (versioned JS, returns 404)
+
+  Analytics endpoints (Adobe):
+    smetrics.verisign.com         - Adobe Analytics (server: jag)
+    smetrics.namestudioapi.com    - Adobe Analytics (server: jag)
+    smetrics.namestudio.com       - Adobe Analytics
+    verisignincglobaldev.112.2o7.net - Adobe Omniture
+    verisign.sc.omtrdc.net        - Adobe data collection
+
+  Third-party services:
+    dpm.demdex.net                - Adobe Audience Manager
+    cdn.cookielaw.org             - OneTrust cookie consent
+    geolocation.onetrust.com      - OneTrust geolocation
+    privacyportal.onetrust.com    - OneTrust privacy portal
+    manifest.prod.boltdns.net     - Brightcove video
+    players.brightcove.net        - Brightcove player
+    vjs.zencdn.net                - Video.js CDN
+
+Infrastructure patterns:
+  - "nsw" prefix = NameStudio Web
+  - "nswm" prefix = NameStudio Web Mobile/Managed
+  - Three separate backend tiers: config, service, api
+  - sugapi = suggestion API (older name, redirects to new domain)
+  - ALB-backed services (api.namestudio.com, nsw-api.verisign.com)
+    vs CloudFront-backed (nsw-config, nsw-service, nswm-service)
+
+Impact: Maps the complete NameStudio backend architecture. An
+attacker knows exactly which services to target and their hosting
+infrastructure (ALB vs CloudFront vs S3).
+
+
+Finding 9 - youcouldbe.com Returns 502 Bad Gateway (Info)
+----------------------------------------------------------
+The in-scope domain youcouldbe.com returns a 502 Bad Gateway with an
+empty body on both HTTP and HTTPS.
+
+Proof:
+
+  curl -sI "https://youcouldbe.com/"
+
+  HTTP/1.1 502 Bad Gateway
+  Content-Length: 20
+
+  curl -s "https://youcouldbe.com/"
+  (empty response body despite Content-Length: 20)
+
+  curl -sI "https://www.youcouldbe.com/"
+
+  HTTP/1.1 502 Bad Gateway
+  Content-Length: 20
+
+The 502 with no server header and empty body could indicate:
+  - A dangling CNAME pointing to a decommissioned backend
+  - A misconfigured load balancer with no healthy targets
+  - A potential subdomain takeover if the DNS record points to an
+    unclaimed cloud resource
+
+DNS resolution through the session proxy prevented confirming the
+DNS target for takeover assessment.
+
+Impact: If the 502 is caused by a dangling CNAME to an unclaimed
+cloud resource (S3, CloudFront, Heroku, etc.), an attacker could
+claim that resource and serve arbitrary content on youcouldbe.com.
+
+
+Finding 10 - Outdated Client-Side Libraries (Info)
+---------------------------------------------------
+The WHOIS application at registrar.verisign-grs.com uses outdated
+JavaScript libraries with known security advisories.
+
+Proof:
+
+  curl -s "https://registrar.verisign-grs.com/webwhois-ui/" | grep src.*js
+
+  Libraries found:
+    jQuery 3.5.1     (released August 2020, 6 years old)
+    Handlebars 4.7.7 (released January 2022, 4.5 years old)
+    js.cookie 2.2.0  (released 2019)
+    jquery.i18n.properties 1.2.7
+
+  jQuery 3.5.1 has known XSS-related fixes in later versions.
+  Handlebars 4.7.7 has known prototype pollution fixes in 4.7.8+.
+
+Impact: Outdated libraries increase the attack surface. The
+Handlebars prototype pollution (CVE-2021-23383 and related) could
+be relevant since the application uses Handlebars.compile() with
+user-influenced data (WHOIS response rendering).
+
+
+Negative Findings (Properly Secured)
+--------------------------------------
+- verisign.com CSP: strong strict-dynamic with SHA hashes, properly
+  set in the Content-Security-Policy header. Well implemented.
+
+- verisign.com CORS: no CORS headers returned. Properly locked down.
+
+- registrar.verisign-grs.com CORS: no CORS headers. Properly locked
+  down.
+
+- JSESSIONID cookie flags: Secure, HttpOnly, SameSite=Lax all set.
+  The only issue is the hostname in the value, not the cookie
+  security attributes.
+
+- Developer portal registration page: CSRF token properly set in
+  meta tags, reCAPTCHA integration present with proper validation
+  flag.
+
+- WHOIS Handlebars XSS: the triple-brace {{{result.query_string}}}
+  in the template would normally be an XSS vector, but the
+  getI18Message function HTML-encodes the user input via jQuery
+  $('<div/>').text(value).html() before passing it to the template.
+
+- RDAP (rdap.verisign.com): CORS: * is by-design per RFC 7480/7481
+  for RDAP services. Only serves public registration data.
+
+- S3 bucket listing: disabled on all NameStudio S3 buckets. Returns
+  the index page instead of XML listing.
+
+- HSTS: set on all tested domains, including preload directive.
+
+- Adobe Analytics endpoints (smetrics.*): proper CSP, HSTS, nosniff
+  headers. Properly configured.
+
+- SSO endpoints (login.verisign.com): only accept POST, return 405
+  for all other methods. Properly restricted.
+
+- Developer portal: nonce-based script loading, CSRF protection,
+  reCAPTCHA validation. Well implemented.
+
+- Path traversal on EPP endpoint: results in 302 redirect to
+  verisigninc.com, not file disclosure.
+
+
+---
+
+All testing was curl-based from external network. No browser, no
+automated scanners. Stayed within Bugcrowd scope. No authenticated
+testing performed. Used only GET/HEAD/OPTIONS methods except where
+POST was required by the endpoint design.
