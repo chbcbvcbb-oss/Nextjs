@@ -1,0 +1,167 @@
+Paylution (Hyperwallet) - Vulnerability Report
+Target: api.paylution.com / uat-api.paylution.com
+Tested: July 27-28, 2026
+
+
+## 1 - CORS Misconfiguration on REST API (High)
+
+The REST API at /rest/v4/ reflects any Origin header with credentials allowed.
+Every endpoint does this - users, programs, payments, transfers, bank-accounts.
+
+Preflight:
+  curl -sI -X OPTIONS "https://api.paylution.com/rest/v4/users" \
+    -H "Origin: https://evil.com" \
+    -H "Access-Control-Request-Method: GET"
+
+Response:
+  access-control-allow-origin: https://evil.com
+  access-control-allow-credentials: true
+  access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS, PATCH
+  access-control-allow-headers: Origin, X-Requested-With, Content-Type, Accept, Accept-Language, Authorization, Json-Cache-Token, User-Agent, X-SDK-Version, X-SDK-Type, X-SDK-ContextId, X-ContextId, X-Event-Source, X-HW-Wallet-Number
+  access-control-max-age: 600
+
+With auth:
+  curl -sI -u "test:test" "https://api.paylution.com/rest/v4/users" \
+    -H "Origin: https://evil.com"
+
+  access-control-allow-origin: https://evil.com
+  access-control-allow-credentials: true
+
+Tested across all backends (x-server 8.51-8.60), consistently reflected.
+Both prod and UAT affected. Null origin not reflected.
+
+Impact: malicious site can read authenticated API responses cross-origin.
+All methods allowed so attacker can also modify data via PUT/DELETE/PATCH.
+Shopify Partners CSP has api.paylution.com and uat-api.paylution.com in
+connect-src, so this directly affects Shopify merchants using the portal.
+
+
+## 2 - Login Brute Force / No Rate Limiting (High)
+
+The login form at /hw2web/_login has no server-side captcha validation.
+hCaptcha is loaded on the page but the POST request doesnt include any
+captcha token - server never checks it.
+
+  curl -X POST "https://api.paylution.com/hw2web/_login" \
+    -d "loginId=test@test.com&password=wrong"
+
+No lockout after repeated failures. Tested 50 concurrent requests,
+all processed in ~2 seconds (~41ms each). No 429, no block, no delay.
+
+Same on UAT:
+  curl -X POST "https://uat-api.paylution.com/hw2web/_login" \
+    -d "loginId=test@test.com&password=wrong"
+
+REST API auth also has no rate limiting:
+  50 concurrent requests to /rest/v4/users with different creds,
+  all returned 401 in ~2 seconds total. No blocking.
+
+Impact: credential stuffing / brute force against merchant accounts
+on a payment portal. ~8600 attempts/hour from single IP.
+
+
+## 3 - JSESSIONID Exposed in URLs (High)
+
+Session IDs are embedded in URL paths throughout the portal.
+Every resource URL on every page includes the session token:
+
+  /hw2web/javax.faces.resource/jquery-3.5.1.min.js.xhtml;jsessionid=45b1fb3ee9cbeafc94026a4c29fc?ln=js
+
+Confirmed on both environments:
+  curl -sI "https://uat-api.paylution.com/hw2web/landing.xhtml"
+
+  Set-Cookie: JSESSIONID=459cb8b3f848b3799f22e06b1abf; Path=/hw2web; Secure; HttpOnly
+
+But the same session ID appears in all resource URLs in the HTML body.
+This means:
+  - Session ID leaks via Referer header to any external resource
+  - Session ID gets logged in proxy/CDN/server access logs as part of URL
+  - Session ID visible in browser history
+
+Session fixation was tested - server does regenerate on new requests,
+so fixation is mitigated. But the URL leakage is the real issue.
+
+
+## 4 - Wallet Number Leak via Response Headers (Medium)
+
+The REST API returns internal wallet/program numbers in x-hw-wallet-number
+header. Values change based on the username in Basic auth, even on 401:
+
+  curl -sI -u "test:test" "https://api.paylution.com/rest/v4/users"
+  x-hw-wallet-number: 356628091684
+
+  curl -sI -u "root:root" "https://api.paylution.com/rest/v4/users"
+  x-hw-wallet-number: 3450004
+
+  curl -sI -u "api:api" "https://api.paylution.com/rest/v4/users"
+  x-hw-wallet-number: 313690548166
+
+The value 3450004 matches the merchant config ID in the portal image path:
+  /hw2web/javax.faces.resource/3450004/en/triple_play.png.xhtml
+
+This leak is intermittent - depends on which backend serves the request.
+Server 8.56 consistently leaks it. Other backends sometimes dont include
+the header.
+
+Not all usernames return a wallet number (admin, shopify, merchant, system
+return nothing), which means the API resolves program assignments before
+auth validation.
+
+
+## 5 - Login Form Missing CSRF Token (Low)
+
+The login form at /hw2web/_login uses a plain HTML form with no CSRF token:
+
+  <form id="signInForm" action="/hw2web/_login" method="POST">
+    <input name="loginId" type="text" />
+    <input name="password" type="password" />
+    <input type="submit" value="Sign In" />
+  </form>
+
+No ViewState, no anti-CSRF token, no custom header requirement.
+An attacker can submit login requests from any page.
+
+
+## 6 - Server Version Disclosure (Info)
+
+x-server header reveals backend versions on every REST API response:
+
+  Production: 8.51, 8.52, 8.53, 8.54, 8.55, 8.56, 8.57, 8.58, 8.59, 8.60
+  UAT: 73.91
+
+Shows at least 10 backends on prod and release cadence differences.
+
+
+## 7 - Tomcat Default Error Pages on UAT (Info)
+
+Raw Tomcat error pages on UAT REST endpoints:
+
+  curl -s "https://uat-api.paylution.com/rest/v4/webhook-notifications"
+
+Returns default Tomcat HTML error page with standard styling
+(Tahoma, #525D76 background). Not a custom error handler.
+
+POST to same endpoint returns 405 with same Tomcat default page.
+
+
+## 8 - Unencrypted ViewState on Password Reset (Info)
+
+Password reset form at /hw2web/wallet/password/forgottenUserCredential.xhtml
+uses plaintext numeric ViewState values:
+
+  javax.faces.ViewState value="198878715336894106:4172201093714061750"
+
+These are server-side references (two 64-bit integers), not encrypted.
+Changes each request but format is predictable.
+
+
+---
+
+Shopify connection:
+  - partners.shopify.com CSP connect-src includes api.paylution.com
+    AND uat-api.paylution.com
+  - /hw2web/shopify endpoint exists (WAF blocked on prod, 404 on UAT)
+  - Paylution is Hyperwallet which is PayPal's merchant payout service
+    used by Shopify for partner/merchant payments
+
+All testing was curl-based, no browser, no automated scanners.
