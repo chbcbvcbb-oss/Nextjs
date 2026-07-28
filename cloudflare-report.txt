@@ -22,10 +22,77 @@ Combined with no client authentication requirement, this makes the attack
 trivially exploitable.
 
 
-Severity: Critical
--------------------
+Severity: Critical (CVSS 9.6)
+-------------------------------
+CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H
+
 Full Cloudflare account takeover via OAuth flow. Attacker gets persistent
 API access (refresh tokens via offline_access scope) to all account resources.
+
+83 OAuth scopes exposed: 37 read, 36 write, 2 edit, 2 admin, 6 special.
+3 scopes auto-granted (account:read, user:read, offline_access).
+
+
+Affected Products (11 categories, 30+ Cloudflare services)
+-----------------------------------------------------------
+
+INFRASTRUCTURE CONTROL:
+  - DNS: Read/create/modify/delete records (domain hijacking, traffic redirect)
+    dns_records:edit, dns_records:read, dns_settings:read, dns_analytics:read
+  - Domain Registrar: Full domain admin (transfer, nameservers, WHOIS)
+    registrar-domains.admin, registrar-domains.read
+  - SSL/TLS: Create/manage certificates (rogue certs, disable HTTPS)
+    ssl-and-certificates.write, account-ssl-and-certificates.write
+  - Access: Modify access policies (bypass auth on protected apps)
+    access:read, access:write
+  - SSO: Modify SSO connectors (redirect to attacker IdP)
+    sso-connector:read, sso-connector:write
+  - Load Balancing: Modify load balancer configs
+    lb:edit, lb:read
+
+CODE EXECUTION:
+  - Workers: Upload/deploy code at Cloudflare edge (intercept all traffic)
+    workers_scripts:write, workers_routes:write, workers:write
+  - Pages: Deploy websites (replace production sites)
+    pages:write, pages:read
+  - Containers: Deploy containers
+    containers:write
+
+DATA ACCESS:
+  - Secrets Store: Read/write API keys, credentials, encryption keys
+    secrets_store:read, secrets_store:write
+  - Workers KV: Read/write all key-value data
+    workers_kv:write
+  - D1 Databases: Full database access
+    d1:write
+  - R2 Object Storage: Read/modify/delete all objects
+    r2_catalog:write
+  - Zero Trust PII: Access employee/user PII from logs
+    teams:pii, teams:read, teams:write
+
+PERSISTENCE & EVASION:
+  - Offline Access: Refresh tokens for persistent access (auto-granted)
+    offline_access
+  - Email Routing: Redirect emails, intercept password resets
+    email_routing:write, email_sending:write
+  - Audit Logs: Monitor victim's security responses
+    auditlogs:read, logs.read
+  - Notifications: Modify alert policies to suppress detection
+    notification:read, notification:write
+  - Logpush: Redirect security logs to attacker
+    logpush:read, logpush:write
+
+AI & MACHINE LEARNING:
+  - AI Gateway, Workers AI, AI Search, AI Audit
+    ai:write, aig:write, ai-search:write, aiaudit:write
+
+NETWORKING:
+  - Connectivity: Full tunnel/network admin
+    connectivity:admin, connectivity:bind, connectivity:read
+  - Cloudflare One: Zero Trust network config
+    cfone:read, cfone:write
+  - DEX: Digital experience monitoring
+    dex:read, dex:write
 
 
 Steps to Reproduce
