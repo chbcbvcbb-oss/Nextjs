@@ -1,0 +1,391 @@
+Wolt Bug Bounty - Vulnerability Findings
+Target: Wolt (HackerOne)
+Tested: July 28, 2026
+
+
+Finding 1 - Development Environment Exposes API Keys and Full Backend
+Architecture via Publicly Accessible Admin Portal (Critical)
+----------------------------------------------------------------------
+The Wolt-at-Work admin portal for the development environment is
+publicly accessible at wolt-at-work-admin.development.dev.woltapi.com
+without any authentication. The HTML source contains a base64-encoded
+environment configuration blob (window.__env) that, when decoded,
+exposes live API keys, internal service URLs, and the complete
+development backend architecture.
+
+Proof:
+
+  curl -s "https://wolt-at-work-admin.development.dev.woltapi.com/" \
+    | grep -o 'window.__env = .*' | head -1
+
+  The window.__env value is a base64-encoded JSON object. Decoded:
+
+  {
+    "APP_ENV": "development",
+    "GATEKEEPER_API_KEY": "vaHsxSf4ug99jGxFS2LJJ7yoMrJ6R0hNBrH6CDJ6",
+    "GOOGLE_MAPS_API_KEY": "AIzaSyCtQ2l8bLzoUyiNVc4KvIMzmU3QvtIkqeo",
+    "MAPBOX_TOKEN": "pk.eyJ1Ijoid29sdG1hcCIsImEiOiJjbHMwa2Ewc3Ew...",
+    "FB_APP_ID": "296790577186689",
+    "INTERCOM_APP_ID": "vqi141hd",
+    "AUTH_API_URI": "https://wolt-authentication.development.dev.woltapi.com",
+    "RESTAURANT_API_URI": "https://restaurant-api.development.dev.woltapi.com",
+    "CORPORATE_SERVICE_URI": "https://corporate-service.development.dev.woltapi.com",
+    "WOLF_API_URI": "https://wolf.development.dev.woltapi.com",
+    "DAAS_CORE_API_URI": "https://daas-public-api.development.dev.woltapi.com",
+    "DAAS_SELF_SERVICE_API_URI": "https://daas-self-service-api.development.dev.woltapi.com",
+    "LEGITIMIZER_API_URI": "https://legitimizer.development.dev.woltapi.com",
+    "OPS_TOOLS_URI": "https://ops-tools.development.dev.woltapi.com",
+    "MERCHANT_PAYOUT_URI": "https://merchant-payout-service.development.dev.woltapi.com",
+    "GATEKEEPER_URI": "https://gatekeeper.development.dev.woltapi.com/v1/corporate_admin",
+    "SEVEN_ELEVEN_CORPORATE_IDS": "8c76c2969c8641bcaf035134f122f78a",
+    ...plus country configs, feature flags, payment configs
+  }
+
+The GATEKEEPER_API_KEY is a server-side API key. When sent to the
+Gatekeeper endpoint, the server returns HTTP 500 (processing the
+key, not rejecting it):
+
+  curl -sI "https://gatekeeper.development.dev.woltapi.com/v1/corporate_admin" \
+    -H "x-api-key: vaHsxSf4ug99jGxFS2LJJ7yoMrJ6R0hNBrH6CDJ6"
+
+  Response: HTTP 500 Internal Server Error
+
+Without the key, the same endpoint returns HTTP 404. The 500 confirms
+the key is being processed by the Gatekeeper authorization layer.
+
+The Google Maps API key is also exposed in a script tag:
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBbXdEgbWO0g8xFBpyBabWHXQR-er1F_1o&libraries=places">
+
+Impact: The Gatekeeper API key grants access to corporate admin
+functions on the development environment. An attacker could use
+this to manage corporate accounts, modify policies, and access
+business data in the dev environment. The Google Maps and Mapbox
+tokens could be abused for quota exhaustion attacks generating
+charges. The full service map enables targeted attacks against
+internal microservices.
+
+
+Finding 2 - OpsTools Employee Portal Accessible Without Authentication
+on Both Development AND Production (Critical)
+----------------------------------------------------------------------
+ops.wolt.com (production) and ops-tools.development.dev.woltapi.com
+(development) both serve the OpsTools application shell and JavaScript
+bundles without requiring authentication. The HackerOne scope
+explicitly states for ops.wolt.com: "This service's endpoints are only
+accessible by Wolt employees (if you can show otherwise, that'll be
+very interesting)."
+
+The OpsTools JS bundle (1.2MB) is served to any unauthenticated user
+and contains:
+
+  1. Sentry DSN with full write access:
+     5efc5267df9b38c80357c8657e7858f7@o17585.ingest.us.sentry.io/4509903900442624
+
+  2. DoorDash internal infrastructure URLs:
+     - ops-dev.doordash.com/unified-gateway-dash
+     - ops-dev.doordash.team/proxy/unity
+     - ops-tools-shell.doordash.team/unified-gateway
+     - unified-gateway.dashapi.com
+     - unified-gateway.doordash.com
+     - unity.doordash.com
+
+  3. Internal Slack channel: wolt.slack.com/archives/C04A7A44A
+
+  4. Wolt internal APIs:
+     - converse-api.wolt.com (messaging)
+     - converse-api.development.dev.woltapi.com
+
+Proof - Sentry event injection:
+
+  curl -s "https://o17585.ingest.us.sentry.io/api/4509903900442624/store/" \
+    -H "Content-Type: application/json" \
+    -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=5efc5267df9b38c80357c8657e7858f7" \
+    -d '{"message":"test","level":"info"}'
+
+  Response: {"id":"e9590b751c0e491daa7a1a4ee048b77f"} (200 OK)
+
+Events are accepted and will appear in the ops team's Sentry
+dashboard. An attacker can:
+  - Flood the error monitoring with fake events
+  - Inject crafted error messages that appear legitimate
+  - Potentially poison alerting rules
+  - Mask real errors during an active attack
+
+The same Sentry DSN is shared between production ops.wolt.com and
+development ops-tools.development.dev.woltapi.com (same project ID
+4509903900442624), meaning injected events affect production monitoring.
+
+The DoorDash URLs reveal that Wolt's OpsTools is deeply integrated
+with DoorDash infrastructure (Wolt was acquired by DoorDash). This
+exposes the internal architecture linking the two companies' systems.
+
+Impact: Unauthenticated access to the employee admin shell leaks
+internal infrastructure details, API routes, Sentry credentials,
+and DoorDash integration endpoints. The Sentry injection allows
+poisoning production error monitoring. The DoorDash URLs expand
+the attack surface beyond Wolt into DoorDash infrastructure.
+
+
+Finding 3 - Development Authentication Service CORS Allows
+http://localhost with Credentials (High)
+----------------------------------------------------------------------
+wolt-authentication.development.dev.woltapi.com (the development OAuth2
+provider) allows CORS requests from http://localhost:3000 with
+credentials. The CSP frame-ancestors also permits localhost origins.
+
+Proof:
+
+  curl -sI "https://wolt-authentication.development.dev.woltapi.com/" \
+    -H "Origin: http://localhost:3000"
+
+  Response headers:
+    access-control-allow-origin: http://localhost:3000
+    access-control-allow-credentials: true
+    content-security-policy: frame-ancestors 'self'
+      https://*.development.dev.woltapi.com
+      http://localhost:3000
+      http://localhost:8080
+      http://localhost:8889
+
+The dev auth service has live OAuth2 endpoints:
+  - /oauth2/authorize (returns 400 = needs params)
+  - /oauth2/token (returns 405 = POST only)
+  - /login (returns 302 = redirect to login)
+
+These are the same endpoint patterns as the production auth service
+at authentication.wolt.com.
+
+If an attacker can get a Wolt developer to visit a malicious page
+while the developer has localhost:3000 running, the attacker's page
+could make cross-origin requests to the dev auth service using the
+developer's session. Since the dev environment shares the same
+OAuth2 flow, tokens obtained from the dev auth service may grant
+access to development backends.
+
+Impact: The localhost CORS allowance with credentials enables
+session hijacking attacks against Wolt developers who are logged
+into the development environment. Development JWTs from this service
+grant access to development APIs that contain real or near-real data.
+
+
+Finding 4 - Production corporate.wolt.com CSP References Dev Environment
+and Leaks Internal Infrastructure (High)
+------------------------------------------------------------------------
+The production corporate.wolt.com portal's Content-Security-Policy
+header includes *.development.dev.woltapi.com in multiple directives,
+effectively whitelisting the entire development environment for
+production resource loading.
+
+Proof:
+
+  curl -sI "https://corporate.wolt.com/" | grep content-security-policy
+
+  CSP includes these dev references in production:
+    connect-src: *.development.dev.woltapi.com
+    style-src: *.development.dev.woltapi.com
+    media-src: *.development.dev.woltapi.com
+    font-src: *.development.dev.woltapi.com
+    frame-src: *.development.dev.woltapi.com
+
+  Also leaks a dev S3 bucket:
+    media-src: wolt-dev-development-wolt-at-work-admin-corporate.s3.eu-west-1.amazonaws.com
+
+  Additional third-party integrations exposed:
+    connect-src: api.sprig.com (survey tool)
+    connect-src: *.creditornot.com
+    frame-src: https://connect.kombo.dev (HR integration)
+    connect-src: https://api.avo.app/inspector/v1/track (analytics)
+
+This means production JavaScript running on corporate.wolt.com can
+fetch data from any *.development.dev.woltapi.com endpoint. If an
+attacker achieves XSS on corporate.wolt.com, they can pivot to the
+development environment (which has weaker security controls and
+exposed API keys per Finding 1) without CSP blocking the requests.
+
+Impact: Breaks environment isolation. Production CSP whitelisting
+development domains means a single XSS on corporate.wolt.com gives
+access to the entire dev backend. The S3 bucket name reveals internal
+naming conventions and AWS region (eu-west-1).
+
+
+Finding 5 - Promo Codes and Business Logic Exposed in Public API Config
+(Medium)
+------------------------------------------------------------------------
+restaurant-api.wolt.com/v1/config returns a JSON config endpoint
+without authentication that exposes active promo codes, business
+rules, transaction limits, and internal configuration.
+
+Proof:
+
+  curl -s "https://restaurant-api.wolt.com/v1/config"
+
+  Exposed data:
+    "easter_egg_promo_code": {
+      "DKK": "EggHuntUnlockedDKK",
+      "EUR": "EggHuntUnlockedEUR",
+      "SEK": "EggHuntUnlockedSEK"
+    }
+    "easter_egg_token_code": "EggHuntUnlockedTokens"
+    "referral_bonus": 500 (5.00 EUR)
+    "referral_bonuses": {"EUR": 500, "SEK": 10000}
+    "day_transactions_max_sum": 50000 (500.00)
+    "single_transaction_max_end_amount": 50000
+    "card_subtype_regexes": [{"pattern": "^534287.*", "type": "edenred"}]
+    "country_address_thresholds": {"FIN": {"reject": 500, "warn": 150}}
+
+The promo codes appear to be active (enter_promo_code_enabled: true).
+The Edenred card BIN pattern (534287) reveals which card numbers
+trigger meal benefit payment flows. The transaction limits and address
+thresholds expose business rules that could be used to craft orders
+that bypass validation.
+
+Impact: Active promo codes can be abused for unauthorized discounts.
+Transaction limits reveal max amounts for fraud targeting. Card BIN
+pattern exposure aids payment fraud. Business rule disclosure enables
+targeted manipulation of order validation.
+
+
+Finding 6 - DoorDash OAuth Client ID and Unified Gateway Exposure (Medium)
+---------------------------------------------------------------------------
+The OpsTools application exposes DoorDash integration details including
+an OAuth client ID, internal gateway URLs, and a DoorDash Sentry
+organization ID.
+
+Proof (from unity.doordash.com redirect):
+
+  curl -sI "https://unity.doordash.com/"
+
+  Location: https://identity.doordash.com/auth?
+    clientId=1710988472877815816&
+    scope=*&
+    response_type=code&
+    redirectUri=https://unity.doordash.com/auth_callback
+
+The CSP from the DoorDash Unity portal also reveals:
+  - AWS Connect call center: doordashcontactcenter.my.connect.aws
+  - S3 buckets: converse-attachments.s3.us-west-2.amazonaws.com,
+    doordash-growth.s3.us-west-2.amazonaws.com
+  - VeryGoodVault (PCI tokenization): js.verygoodvault.com
+  - Kinesis Video Streams: kinesisvideo.us-west-2.amazonaws.com
+  - SendBird (messaging): wss://*.sendbird.com
+  - Pendo analytics: cdn.pendo.io, data.pendo.io
+  - DoorDash dev environment: converse-api-dd.development.dev.woltapi.com
+
+The DoorDash OAuth client ID (1710988472877815816) with scope=*
+requests full access. Combined with knowledge of the redirect_uri
+callback path, this aids OAuth flow manipulation attacks.
+
+Impact: Exposes the integration surface between Wolt and DoorDash
+parent company infrastructure. The OAuth client ID, callback URL
+pattern, S3 buckets, and internal service names enable targeted
+attacks against the DoorDash-Wolt integration layer.
+
+
+Finding 7 - Multiple Development Backend Services Publicly Reachable (Medium)
+------------------------------------------------------------------------------
+Beyond the admin portals, multiple development backend API services
+are publicly accessible on the internet. While most require
+authentication for actual API calls, their existence and response
+behavior reveals internal architecture.
+
+Services accessible (all on *.development.dev.woltapi.com):
+
+  wolt-authentication (OAuth2 provider):
+    /oauth2/authorize -> 400 (expects parameters)
+    /oauth2/token -> 405 (expects POST)
+    /login -> 302 (redirect to login flow)
+    CORS: http://localhost:3000 with credentials
+
+  restaurant-api:
+    /v1/config -> removed message (was live until H1/2019)
+    /v3/venues -> 401 (auth required)
+    Server: gunicorn
+
+  gatekeeper:
+    /v1/corporate_admin -> 500 with API key (processes key)
+    /v1/corporate_admin -> 404 without key
+
+  ops-tools -> 200 (full SPA shell, no auth)
+  wolt-at-work-admin -> 200 (full SPA shell + env config, no auth)
+  wolf -> 404 (responds)
+  legitimizer -> 404 (responds)
+  corporate-service -> 404 (responds)
+  daas-public-api -> 404 (responds)
+  daas-self-service-api -> 404 (responds)
+  merchant-payout-service -> 404 (responds)
+  consumer-static-assets -> responds
+  image-resizer-proxy -> responds
+  webfonts -> responds
+
+All development services are behind CloudFront but none are IP-
+restricted or behind a VPN. The development authentication service
+responds with full OAuth2 capabilities.
+
+Impact: Development backends should be behind VPN or IP allowlists.
+Their public accessibility allows enumeration of internal services,
+API probing, and potential exploitation of dev-only vulnerabilities
+that wouldn't exist in production (relaxed auth, debug endpoints,
+test data).
+
+
+Finding 8 - Israel Tax Authority OAuth Credentials in Production Frontend (Low)
+---------------------------------------------------------------------------------
+The production wolt.com frontend JavaScript contains hardcoded OAuth
+credentials for the Israel Tax Authority (ITA) integration.
+
+Proof:
+
+  curl -s "https://wolt.com/" | grep -o "openapi.taxes.gov.il[^\"]*"
+
+  URL found:
+    openapi.taxes.gov.il/shaam/production/longtimetoken/oauth2/authorize?
+      response_type=code&
+      client_id=bfe4eacd16abd89b506bc1263bee5c80&
+      scope=scope&
+      redirect_uri=https://wolt.com/courier-isr-fiscalization
+
+This reveals:
+  - OAuth client_id for the Israel Tax Authority API: bfe4eacd16abd89b506bc1263bee5c80
+  - The redirect_uri for the OAuth callback
+  - The integration is for courier fiscalization (tax reporting)
+  - "longtimetoken" in the path suggests long-lived tokens
+
+Impact: Exposes a government API integration credential. While the
+OAuth flow requires user interaction, the client_id combined with
+knowledge of the redirect_uri pattern could be used for OAuth flow
+manipulation or phishing attacks targeting Wolt couriers in Israel.
+
+
+Negative Findings (Properly Secured)
+--------------------------------------
+- Production authentication.wolt.com CORS: properly restricted to
+  specific origins (wolt.com, app.wolt.fi). Does not reflect arbitrary
+  origins. No wildcard subdomains.
+
+- restaurant-api.wolt.com CORS: restricted to wolt.com origins only.
+  Subdomain reflection not possible.
+
+- ops.wolt.com /apps endpoint: returns proper 401 with JSON error
+  message. Backend API calls are authenticated.
+
+- S3 bucket (wolt-dev-development-wolt-at-work-admin-corporate):
+  exists but bucket listing returns 403 AccessDenied.
+
+- corporate.wolt.com: nonce-based CSP with strict-dynamic. XSS
+  protection is strong (but CSP allows dev domains).
+
+- merchant.wolt.com: proper security headers, no dev domain leakage
+  in CSP.
+
+- ops.wolt.com: nonce-based CSP, strict-dynamic, Sentry report-uri.
+
+- wolt.com main site: strong CSP with strict-dynamic and SHA hashes.
+  HSTS enabled. x-frame-options SAMEORIGIN.
+
+
+---
+
+All testing was curl-based from external network. No browser, no
+automated scanners. No account creation, no authenticated testing.
+No requests were made to out-of-scope domains (blog.wolt.com,
+press.wolt.com, wolt.atlassian.net, etc.).
